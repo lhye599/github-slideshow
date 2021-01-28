@@ -1,0 +1,3797 @@
+#include <stdlib.h>
+#include <stdio.h>
+#include "co_utils.h"
+
+#include "at_cmd_task.h"
+#include "at_recv_cmd.h"
+
+#include "rwip.h"
+#include "flash.h"
+#include "gapm_task.h"
+#include "app_task.h"
+#include "app_spss.h"
+#include "sps_server.h"
+
+
+#include "prf.h"
+#include "app.h"
+#include "uart.h"
+#include "reg_uart.h"
+#include "att.h"
+#include "user_mem.h"
+#include "user_profile.h"
+#include "user_c_lib.h"
+#include "user_sys.h"
+#include "at_profile_spsc.h"
+#include "at_profile_spss.h"
+#include "at_ota_upgrade.h"
+
+#include "gattc_task.h"
+#include "at_bond_manage.h"
+
+#include "led.h"
+#include "gpio.h"
+#include "arch.h"
+#include "string.h"
+#define AT_CMD_DBG FR_DBG_OFF
+#define AT_CMD_LOG FR_LOG(AT_CMD_DBG)
+
+#define AT_CMD_ASSERT(v) do { \
+    if (!(v)) {             \
+        printf("%s %s \n", __FILE__, __LINE__); \
+        while (1) {};   \
+    }                   \
+} while (0);
+
+//--------------------------lin_start--------------------------------
+//include
+#include "user_timer.h"
+#include "gpio.h"
+#include "exti.h"
+#include "timer.h"
+#include "ssp.h"
+#include "user_task.h"
+
+//bianliang
+#define AT_DBG   FR_DBG_OFF
+SYS_CONFIG sys_config;			   //存储变量()
+uint8_t aes_result[16];            //存放AES加密后的结果
+os_timer_t disconnect_timer;       //连接认证超时定时器变量    3000ms
+os_timer_t nfc_init_timer;         //nfc初始化定时器
+os_timer_t motor_run_timer;        //电机运行定时器
+os_timer_t nfc_indicator_timer;    //nfc刷卡指示器
+os_timer_t motor_run_error_timer;    //电机运行出错定时器
+os_timer_t jishi_timer;    //电机运行出错定时器
+os_timer_t one_minute_timer;    //1分钟之后调用休眠函数
+os_timer_t hetai_10s_timer;    //合泰唤醒时间
+uint8_t hetai_wake_flag = 0;   //合泰唤醒标志  0没    1有
+os_timer_t music_error_timer;    //刷卡语音播报定时器
+//os_timer_t lanya_error_timer;    //蓝牙语音播报定时器
+
+
+#if ENCRYPT_SWITCH
+	uint8_t BLE_flag = 0;              //身份验证标记,为2的时候表明验证通过
+#else
+	uint8_t BLE_flag = 2;
+#endif
+uint8_t plaintext[] = {0x72, 0x65, 0x31, 0x66, 0x75, 0x74, 0x67, 0x35, 0x6C, 0x71, 0x78, 0x37, 0x66, 0x78, 0x31, 0x34};	//明文
+uint8_t s1_buff[20]={0x55,0xAA,0x03,0x00,0x00,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff};//可能是暗文
+
+//硬件定时器 TM0,TM1
+//static uint32_t tick0 = 0;
+//static uint8_t tim0_run_num = 0;
+
+//s50 card
+uint8_t CardIDTypeA[10],TagType[2];//save card Id	//卡ID类型 ， 标记类型
+uint8_t CollFlag,SpiRxDatachar,CardType,SpiRxData;
+uint8_t s50_id[5] = {0,0,0,0,0};  //s50卡卡号保存
+
+//task_id  任务id
+uint8_t jishi_task_id=0;
+uint8_t ble_motor_task_id =0;
+uint8_t nfc_task_id = 0;
+int8_t motor_run_state = 0;
+uint8_t opening_door_flag = 0;     //是否正在开锁中   0:未在开锁    1:正在开
+
+//secret 秘密
+uint8_t set_ht_secret[4] = {0,0,0,0};      //设置的开锁密码，未设置为0
+
+//bat_dianliang
+uint8_t bat_dianliang = 0x01;                //0x01:有电  0x02:无电
+uint8_t bat_dianliang_jishu=0;  //低电闪灯次数，间隔500毫秒
+uint8_t bat_dianliang_jishu_changshu=0x14;//常数 20
+
+//nfc扇区数据读取缓存
+/*
+section1_block1[0];//NFC身份
+section1_block1[11],4);//获取随机号
+section1_block2[7],4);//获取手机号码
+changguan_nfc=section1_block0[0]+section1_block0[1]*256;//NFC场馆号
+guihao_nfc = guihao_nfc*10+(section1_block0[guihao_index2]-0x30);柜号
+section0_block1;卡号
+
+*///			
+//			 											       
+uint8_t section1_block0[16]={0},	// 场馆号4	 柜号 最大12
+				section1_block1[16]={0},  //NFC身份1 随机数4 密钥最大8 时限2
+				section1_block2[16]={0};	//手机号码 最大16
+
+uint8_t section0_block1[16]={0};//好像为万能卡号信息
+uint8_t section0_block1_key[16] ={0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f};
+//开锁记录
+all_jilu jilu_data;
+
+//测试卡片
+//uint8_t test_card[3][4]={{0x36,0x83,0xbd,0x22},{0x36,0xf3,0x86,0x22},{0x36,0xb6,0x96,0x22}};
+
+uint8_t show_bit=25;      //1-88;	
+uint8_t tick_no=20;       
+uint8_t val,tool;
+uint8_t zhen,fen;
+//uint8_t display_data[1] = {0xf5};//单线数据发送，1字节缓存
+uint8_t display_data[2] = {0xf7,POWER_ON_MUSIC};//单线数据发送，2字节缓存（音量和曲目均通过这个buff）
+uint8_t danxian_count=2,cishu_flag=0; //应该是发送音乐芯片字节次数，和是否发送标志位
+
+uint8_t zhongduan_flag = 0;
+
+phone_database all_phone;//存手机号码记录
+
+uint8_t systerm_ok=0;//系统稳定标志
+//uint8_t jishi_flag;
+
+uint8_t test_second_heart = 1;
+//--------------------------lin_end--------------------------------
+struct at_buff_env gAT_buff_env;
+struct at_ctrl gAT_ctrl_env = {0};
+
+const uint8_t rf_power_arr[6] =
+{0x28,0x13,0x10,0x08,0x04,0x02};
+
+const uint16_t adv_int_arr[6] =
+{80,160,320,800,1600,3200};
+
+void at_send_rsp(char *str)
+{
+    uart_write((uint8_t *)"\r\n", 2, NULL, NULL);
+    uart_write((uint8_t *)str, strlen(str), NULL, NULL);
+    uart_write((uint8_t *)"\r\n", 2, NULL, NULL);
+}
+void at_send_rsp1(char *str,uint8_t len)
+{
+    //uart_write((uint8_t *)"\r\n", 2, NULL, NULL);
+    uart_write((uint8_t *)str, len, NULL, NULL);
+    uart_write((uint8_t *)"\r\n", 2, NULL, NULL);
+}
+uint8_t *find_int_from_str(uint8_t *buff)
+{
+    uint8_t *pos = buff;
+    while(1)
+    {
+        if(*pos == ',' || *pos == '\r')
+        {
+            *pos = 0;
+            break;
+        }
+        pos++;
+    }
+    return pos;
+}
+
+
+
+enum
+{
+    AT_CMD_IDX_NAME,
+    AT_CMD_IDX_MODE,
+    AT_CMD_IDX_MAC,
+    AT_CMD_IDX_CIVER,
+    AT_CMD_IDX_UART,
+    AT_CMD_IDX_Z,
+    AT_CMD_IDX_CLR_BOND,
+    AT_CMD_IDX_LINK,
+    AT_CMD_IDX_ENC,
+    AT_CMD_IDX_SCAN,
+    AT_CMD_IDX_APP,
+    AT_CMD_IDX_CONNADD,
+    AT_CMD_IDX_CONN,
+    AT_CMD_IDX_SLEEP,
+    AT_CMD_IDX_UUID,
+    AT_CMD_IDX_DISCONN,
+    AT_CMD_IDX_FLASH,
+    AT_CMD_IDX_SEND,
+    AT_CMD_IDX_TRANSPARENT,
+    AT_CMD_IDX_AUTO_TRANSPARENT,
+    AT_CMD_IDX_POWER,
+    AT_CMD_IDX_ADVINT,
+};
+const char *cmds[] =
+{
+    [AT_CMD_IDX_NAME] = "NAME",
+    [AT_CMD_IDX_MODE] = "MODE",
+    [AT_CMD_IDX_MAC] = "MAC",
+    [AT_CMD_IDX_CIVER] = "CIVER",
+    [AT_CMD_IDX_UART] = "UART",
+    [AT_CMD_IDX_Z] = "Z",
+    [AT_CMD_IDX_CLR_BOND] = "CLR_BOND",
+    [AT_CMD_IDX_LINK] = "LINK",
+    [AT_CMD_IDX_ENC] = "ENC",
+    [AT_CMD_IDX_SCAN] = "SCAN",
+    [AT_CMD_IDX_APP] = "ADP",
+    [AT_CMD_IDX_CONNADD] = "CONNADD",
+    [AT_CMD_IDX_CONN] = "CONN",
+    [AT_CMD_IDX_SLEEP] = "SLEEP",
+    [AT_CMD_IDX_UUID] = "UUID",
+    [AT_CMD_IDX_DISCONN] = "DISCONN",
+    [AT_CMD_IDX_FLASH] = "FLASH",
+    [AT_CMD_IDX_SEND] = "SEND",
+    [AT_CMD_IDX_TRANSPARENT] = "+++",
+    [AT_CMD_IDX_AUTO_TRANSPARENT] = "AUTO+++",
+    [AT_CMD_IDX_POWER] = "POWER",
+    [AT_CMD_IDX_ADVINT] = "ADVINT",
+};
+
+////从机接收主机数据处理函数*******************************************************************************************
+//slave recv
+void at_spss_recv_data_ind_func(void *arg)
+{
+    struct gattc_write_req_ind *param = (struct gattc_write_req_ind *)arg;
+    //uart_put_data_noint(param->value,param->length);    //uart is no limited
+	printf("ke_get_mem_free:%d\r\n",ke_get_mem_free(KE_MEM_NON_RETENTION));//剩10892 10676
+    //if( ke_get_mem_free(KE_MEM_NON_RETENTION)>11264 )
+		{
+		   //pc4,pc5通信串口
+		   //at_send_rsp(char *str);
+	       //uart_write((uint8_t *)"phone_send:", 11, NULL, NULL);
+		   //uart_write((uint8_t *)"\r\n", 2, NULL, NULL);
+	       //uart_put_data_noint(param->value,param->length);//now use
+
+		   //pc2,pc3通信串口
+    	   //printf("the phone->ble data:%s\r\n",param->value);
+    	   printf("phone->ble:");
+		   show_reg2(param->value,param->length,1);//以十六进制打印
+
+		   BLE_ReceiveHandle(param->value,param->length);//ble接收app数据处理
+	}
+        
+}
+//master recv
+void at_spsc_recv_data_ind_func(void *arg)
+{
+    struct gattc_event_ind *param = (struct gattc_event_ind *)arg;
+    if( ke_get_mem_free(KE_MEM_NON_RETENTION)>11264 )
+        uart_put_data_noint(param->value,param->length);    //uart is no limited
+    //printf("%d\r\n",param->length);
+}
+
+extern uint16_t current_con_interval;
+void at_con_param_update(uint8_t conidx,uint16_t latency)
+{
+    if( app_env.con_param.con_latency != latency
+        || app_env.con_param.con_interval != 6
+        || app_env.con_param.sup_to != 400
+      )
+    {
+        struct gapc_conn_param conn_param;
+        conn_param.intv_min = current_con_interval;
+        conn_param.intv_max = current_con_interval;
+        conn_param.latency  = latency;        //50
+        conn_param.time_out = 400;
+        appm_update_param(conidx, &conn_param);
+    }
+}
+
+void at_get_adv(void *arg)
+{
+    struct gapm_adv_report_ind *param = (struct gapm_adv_report_ind *)arg;
+    uint8_t next_free_rpt_idx = 0xff;
+    for(uint8_t idx = 0; idx<ADV_REPORT_NUM; idx++)
+    {
+        if(gAT_buff_env.adv_rpt[idx].evt_type == 0xff && next_free_rpt_idx == 0xff)
+            next_free_rpt_idx = idx;
+        if(memcmp(gAT_buff_env.adv_rpt[idx].adv_addr.addr,param->report.adv_addr.addr,BD_ADDR_LEN) == 0 )
+            goto _exit;
+
+    }
+    memcpy((uint8_t *)(&gAT_buff_env.adv_rpt[next_free_rpt_idx]), (uint8_t *)&param->report, sizeof(struct adv_report));
+_exit:
+    ;
+}
+
+void at_scan_done(void *arg)
+{
+    uint8_t *at_rsp = os_malloc(150,KE_MEM_NON_RETENTION);
+    uint8_t *addr_str = os_malloc(BD_ADDR_LEN*2+1,KE_MEM_NON_RETENTION);
+    uint8_t *rsp_data_str = os_malloc(ADV_DATA_LEN*2+1,KE_MEM_NON_RETENTION);
+
+    sprintf((char *)at_rsp,"+SCAN:ON\r\nOK");
+    at_send_rsp((char *)at_rsp);
+
+    for(uint8_t idx = 0; idx<ADV_REPORT_NUM; idx++)
+    {
+        if(gAT_buff_env.adv_rpt[idx].evt_type !=0xff)
+        {
+            hex_arr_to_ascii_str(addr_str,gAT_buff_env.adv_rpt[idx].adv_addr.addr,BD_ADDR_LEN);
+            rsp_data_str[BD_ADDR_LEN * 2] = 0;
+
+            if(gAT_buff_env.adv_rpt[idx].data_len != 0)
+            {
+                hex_arr_to_ascii_str(rsp_data_str,gAT_buff_env.adv_rpt[idx].data,gAT_buff_env.adv_rpt[idx].data_len);
+                rsp_data_str[gAT_buff_env.adv_rpt[idx].data_len * 2] = 0;
+            }
+            else
+                memcpy(rsp_data_str,"NONE",sizeof("NONE"));
+
+            sprintf((char *)at_rsp,"\n\nNo: %d Addr:%s Rssi:%ddBm\n\n\r\nScan response: \r\n %s\r\n",idx
+                    ,addr_str
+                    ,(signed char)gAT_buff_env.adv_rpt[idx].rssi
+                    ,rsp_data_str);
+            uart_write((uint8_t *)at_rsp, strlen((const char *)at_rsp), NULL, NULL);
+        }
+        else
+            break;
+    }
+    os_free(rsp_data_str);
+    os_free(addr_str);
+    os_free(at_rsp);
+    gAT_ctrl_env.async_evt_on_going = 0;
+}
+void at_start_scan(void *arg)
+{
+    ADV_LED_OFF;
+    appm_start_scan_default(NULL);
+}
+
+void at_start_connecting(void *arg)
+{
+    LINK_LED_OFF;
+    atuo_transparent_clr();
+    struct gapm_start_connection_cmd *cmd = NULL;
+    cmd = os_malloc( sizeof(struct gapm_start_connection_cmd) + sizeof(struct gap_bdaddr),KE_MEM_NON_RETENTION);
+    cmd->op.code = GAPM_CONNECTION_DIRECT;
+    cmd->op.addr_src = GAPM_STATIC_ADDR;
+    cmd->scan_interval = APP_SCAN_INT;
+
+    cmd->con_intv_min = APP_CONN_INT_MIN;
+    cmd->con_intv_max = APP_CONN_INT_MIN;
+
+    cmd->scan_window = APP_SCAN_WIN;//(param->con_intv_min*2-6);
+
+    cmd->con_latency = 0;
+    cmd->superv_to = 400;
+    cmd->ce_len_max = 6;       //12*0.625 =7.5ms
+    cmd->ce_len_min = 6;
+    cmd->nb_peers = 1;
+
+    // struct bd_addr connect_bdaddr = {{0x0f, 0x09, 0x07, 0x09, 0x17, 0x20}};
+    memcpy(&cmd->peers[0].addr.addr[0], gAT_buff_env.master_peer_param.conn_param.peer_addr.addr, BD_ADDR_LEN);
+    cmd->peers[0].addr_type = gAT_buff_env.master_peer_param.conn_param.addr_type;
+    appm_start_connecting(cmd);
+    os_free(cmd);
+}
+
+void at_start_advertising(void *arg)
+{
+    struct gapm_start_advertise_cmd msg;
+    uint8_t *pos ;
+
+    msg.op.code  = GAPM_ADV_UNDIRECT;//GAPM_ADV_UNDIRECT;//GAPM_ADV_NON_CONN;
+    msg.op.addr_src = GAPM_STATIC_ADDR;
+    msg.intv_min     =  adv_int_arr[gAT_buff_env.default_info.adv_int];           //APP_ADV_INT_MIN;              //0x40;
+    msg.intv_max     =  adv_int_arr[gAT_buff_env.default_info.adv_int];     //event interval;
+    msg.channel_map = APP_ADV_CHMAP;//msg.channel_map = 0x01； //只在channel37上进行广播
+	printf("adv_int:%d\r\n",msg.intv_min);
+	
+    msg.info.host.mode = GAP_GEN_DISCOVERABLE;//GAP_GEN_DISCOVERABLE;GAP_LIM_DISCOVERABLE;GAP_NON_DISCOVERABLE
+
+    msg.info.host.adv_filt_policy = ADV_ALLOW_SCAN_ANY_CON_ANY;	//ADV_ALLOW_SCAN_WLST_CON_WLST
+	
+		//uint8_t peer_addr[] = {0x28, 0xD9, 0x47, 0x2A, 0xF0, 0xFF };
+		//memcpy(msg.info.host.peer_addr.addr.addr,peer_addr,6);
+		//msg.info.host.peer_addr.addr_type = 1;
+	
+    pos = msg.info.host.scan_rsp_data;
+    //uint8_t local_name_value[] = "FR8010_AT";
+
+    *pos++ = strlen((const char *)app_device_name) + 1;  //pos len;  (payload + type)
+    *pos++  = '\x09';   //消息类型:名字
+    memcpy(pos, app_device_name, strlen((const char *)app_device_name));
+    pos += strlen((const char *)app_device_name);
+	
+	*pos++  = 0x05;
+	*pos++  = 0x12;//消息类型:连接间隔
+	*pos++  =0x00;*pos++ =0x00;*pos++ =0x00;*pos++  =0x00;
+
+	*pos++  =0x02;
+	*pos++  =0x0A;//消息类型:发送功率
+	*pos++  =0x00;
+     msg.info.host.scan_rsp_data_len = ((uint32_t)pos - (uint32_t)(msg.info.host.scan_rsp_data));
+
+     pos = msg.info.host.adv_data;
+    /*
+        uint8_t manufacturer_value[] = {0x00,0x00};
+        *pos++ = sizeof(manufacturer_value) + 1;
+        *pos++  = '\xff';
+        memcpy(pos, manufacturer_value, sizeof(manufacturer_value));
+        pos += sizeof(manufacturer_value);
+    */
+    //uint8_t short_name_value[] = "FR8010_AT";//{0x4d,0x49,0x20,0x52,0x43};
+
+    /**pos++ = sizeof(app_device_name) + 1;
+    *pos++  = '\x08';
+    memcpy(pos, app_device_name, sizeof(app_device_name));
+    pos += sizeof(app_device_name);*/
+    uint8_t manufacturer_value[] = {0x66,0xFD};//这里是服务的UUID，很重要，不然手机收不到广播包
+    *pos++ = sizeof(manufacturer_value) + 1;
+    *pos++  = '\x02';//服务的UUID，待完善
+    memcpy(pos, manufacturer_value, sizeof(manufacturer_value));
+    pos += sizeof(manufacturer_value);
+
+    /*uint16_t uuid_value;
+
+    uuid_value = ATT_SVC_HID;
+    *pos++ = sizeof(uuid_value) + 1;
+    *pos++  = '\x03';
+    memcpy(pos, (uint8_t *)&uuid_value, sizeof(uuid_value));
+    pos += sizeof(uuid_value);
+    */
+
+    /*
+        uuid_value = 0x03c1;
+        *pos++ = sizeof(uuid_value) + 1;
+        *pos++  = '\x19';       //apearence
+        memcpy(pos, (uint8_t *)&uuid_value, sizeof(uuid_value));
+        pos += sizeof(uuid_value);
+    */
+    *pos++ = 18 + 1;
+    *pos++  = '\xff';//厂商设备信息
+    *pos++  = 0x0D;*pos++  = 0x00;//芯片厂商代码（TI厂商代码0x0d）
+	  *pos++  = (LO_UINT16( PRODUCT_MODEL_NUM ));*pos++  = (HI_UINT16( PRODUCT_MODEL_NUM ));
+	  uint8_t *p_mac = ble_get_addr();//获取MAC地址
+	  *pos++  = *(p_mac+5); 
+	  *pos++  = *(p_mac+4); 
+	  *pos++  = *(p_mac+3); 
+	  *pos++  = *(p_mac+2); 
+	  *pos++  = *(p_mac+1);
+	  *pos++  = *p_mac; 
+	  *pos++  = 0x00;  *pos++  = 0x00;  //厂商代码(哪个公司，暂时没使用)，自主品牌(暂时没使用)
+	  *pos++  = 0x00;  *pos++  = 0x0A;  //软件版本，硬件版本
+	  *pos++  = 0x00;
+	  *pos++  = 0x00;
+	  *pos++  = 0x00;
+	  *pos++  = 0x00;
+    msg.info.host.adv_data_len = ((uint32_t)pos - (uint32_t)(msg.info.host.adv_data));
+    //ADV_LED_ON;
+	//--BLE_LIGHT_ON				   //点亮
+    appm_start_advertising(&msg);
+}
+
+
+
+void at_idle_status_hdl(void *arg)
+{
+    ADV_LED_OFF;
+    if(gAT_ctrl_env.async_evt_on_going != 0)
+    {
+        uint8_t *at_rsp = os_malloc(150,KE_MEM_NON_RETENTION);
+        sprintf((char *)at_rsp,"+MODE:I\r\nOK");
+        at_send_rsp((char *)at_rsp);
+        os_free(at_rsp);
+        gAT_ctrl_env.async_evt_on_going = 0;
+    }
+}
+void at_link_idle_status_hdl(void *arg)
+{
+    if(appm_get_connect_num()==0)
+    {
+        LINK_LED_OFF;
+        if(gAT_ctrl_env.async_evt_on_going != 0)
+        {
+            uint8_t *at_rsp = os_malloc(150,KE_MEM_NON_RETENTION);
+            sprintf((char *)at_rsp,"+DISCONN:A\r\nOK");
+            at_send_rsp((char *)at_rsp);
+            os_free(at_rsp);
+            gAT_ctrl_env.async_evt_on_going = 0;
+        }
+    }
+}
+
+
+void at_recv_cmd_handler(struct recv_cmd_t *param)
+{
+    uint8_t* buff;
+//    uint8_t length;
+
+    uint8_t index;
+    uint8_t *at_rsp;
+
+    buff = param->recv_data;
+//    length = param->recv_length;
+
+    if(gAT_ctrl_env.async_evt_on_going)
+        goto _out;
+
+    for(index = 0; index < (sizeof(cmds) / 4); index ++)
+    {
+        if(memcmp(buff,cmds[index],strlen(cmds[index])) == 0)
+        {
+            buff += strlen(cmds[index]);
+            break;
+        }
+    }
+
+    at_rsp = os_malloc(150,KE_MEM_NON_RETENTION);
+
+    AT_CMD_LOG("%c\r\n",*buff);
+
+    switch(index)
+    {
+        case AT_CMD_IDX_NAME:
+        {
+            switch(*buff++)
+            {
+                case '?':
+                    sprintf((char *)at_rsp,"+NAME:%s\r\nOK",app_device_name);
+                    at_send_rsp((char *)at_rsp);
+                    break;
+                case '=':
+                {
+                    uint8_t idx = 0;
+                    for(; idx<APP_DEVICE_NAME_LENGTH_MAX; idx++)
+                    {
+                        if(*(buff+idx) == '\r')
+                            break;
+                    }
+                    if(idx>=APP_DEVICE_NAME_LENGTH_MAX)
+                    {
+                        printf("ERR,name_len:%d >=%d",idx,APP_DEVICE_NAME_LENGTH_MAX);
+                        *(buff+idx) = 0x0;
+                        sprintf((char *)at_rsp,"+NAME:%s\r\nERR",buff);
+                        at_send_rsp((char *)at_rsp);
+                        goto _exit;
+                    }
+                    memset(app_device_name,0x0,APP_DEVICE_NAME_LENGTH_MAX);
+                    memcpy(app_device_name,buff,idx);
+
+                    //at_store_info_to_flash();
+
+                    sprintf((char *)at_rsp,"+NAME:%s\r\nOK",app_device_name);
+                    at_send_rsp((char *)at_rsp);
+                }
+                break;
+                default:
+                    break;
+            }
+        }
+        break;
+
+        case AT_CMD_IDX_MODE:
+        {
+            switch(*buff++)
+            {
+                case '?':
+                {
+                    uint8_t *mode_str;
+                    switch(appm_get_current_status())
+                    {
+                        case APPM_ADVERTISING:
+                            mode_str = "B";          //BEACON
+                            break;
+                        case APPM_READY:
+                            if(gAT_ctrl_env.upgrade_start == true)
+                                mode_str = "U";          //upgrade
+                            else
+                                mode_str = "I";          //idle
+                            break;
+                        case APPM_INITIATING:
+                            mode_str = "C";          //connecting
+                            break;
+                        case APPM_SCANNING:
+                            mode_str = "S";          //scanning
+                            break;
+                        default :
+                            mode_str = "X";         //others
+                            break;
+                    }
+                    sprintf((char *)at_rsp,"+MODE:%s\r\nOK",mode_str);
+                    at_send_rsp((char *)at_rsp);
+                }
+                break;
+                case '=':
+                    if(*buff == 'I')
+                    {
+                        gAT_ctrl_env.async_evt_on_going = 1;
+                        gAT_buff_env.default_info.role = 0;
+
+                        switch(appm_get_current_status())
+                        {
+                            case APPM_ADVERTISING:
+                                appm_stop_advertising();
+                                appm_set_cb_func(APP_EVT_ID_ADV_END,at_idle_status_hdl);
+                                break;
+                            case APPM_SCANNING:
+                                appm_stop_scan();
+                                appm_set_cb_func(APP_EVT_ID_SCAN_COMPLETED,at_idle_status_hdl);
+                                break;
+                            case APPM_INITIATING:
+                                appm_stop_connecting();
+                                appm_set_cb_func(APP_EVT_ID_MASTER_CONNECT_FAILED,at_idle_status_hdl);
+                                break;
+                            default :
+                            {
+                                //uint8_t *at_rsp = os_malloc(150,KE_MEM_NON_RETENTION);
+                                sprintf((char *)at_rsp,"+MODE:I\r\nOK");
+                                at_send_rsp((char *)at_rsp);
+                                //os_free(at_rsp);
+                                gAT_ctrl_env.async_evt_on_going = 0;
+                                if(gAT_ctrl_env.upgrade_start == true)
+                                {
+                                    gAT_ctrl_env.upgrade_start = false;
+                                    //os_free("1st_pkt_buff\r\n"); todo
+                                }
+                                if( gAT_buff_env.default_info.auto_sleep == true)
+                                {
+                                    appm_sleep_start();
+                                    set_sleep_flag_after_key_release(true);
+                                }
+                                else
+                                {
+                                    appm_sleep_stop();
+                                    set_sleep_flag_after_key_release(false);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    else if(*buff == 'B')
+                    {
+                        if(appm_get_current_status() == APPM_READY)
+                        {
+                            gAT_buff_env.default_info.role = 1;
+                            at_start_advertising(NULL);
+                            appm_set_cb_func(APP_EVT_ID_ADV_END,at_cb_adv_end);
+                            appm_set_cb_func(APP_EVT_ID_DISCONNECTED,at_cb_disconnected);
+                            sprintf((char *)at_rsp,"+MODE:B\r\nOK");
+                            if( gAT_buff_env.default_info.auto_sleep == true)
+                            {
+                                appm_sleep_start();
+                                set_sleep_flag_after_key_release(true);
+                            }
+                            else
+                            {
+                                appm_sleep_stop();
+                                set_sleep_flag_after_key_release(false);
+                            }
+                        }
+                        else
+                            sprintf((char *)at_rsp,"+MODE:B\r\nERR");
+                        at_send_rsp((char *)at_rsp);
+                    }
+                    else if(*buff == 'M')
+                    {
+                        uint8_t i=0;
+                        for(; i<BLE_CONNECTION_MAX; i++)
+                        {
+                            if(appm_get_connect_status(i) && gAT_buff_env.peer_param[i].link_mode ==2)
+                                break;
+                        }
+                        if(i >= BLE_CONNECTION_MAX && appm_get_current_status() == APPM_READY) //no master link
+                        {
+                            //appm_sleep_stop();
+                            //set_sleep_flag_after_key_release(false);
+                            gAT_buff_env.default_info.role = 2;
+                            appm_set_cb_func(APP_EVT_ID_DISCONNECTED,at_start_connecting);
+                            appm_set_cb_func(APP_EVT_ID_MASTER_CONNECT_FAILED,at_start_connecting);
+                            gAT_ctrl_env.async_evt_on_going = 1;
+                            at_start_connecting(NULL);
+                            sprintf((char *)at_rsp,"+MODE:M\r\nOK");
+                        }
+                        else
+                            sprintf((char *)at_rsp,"+MODE:M\r\nERR");
+                        at_send_rsp((char *)at_rsp);
+                    }
+                    else if(*buff == 'U')
+                    {
+                        if(appm_get_current_status() == APPM_READY && appm_get_connect_num()==0)
+                        {
+                            //upgrade mode, stop sleep
+                            appm_sleep_stop();
+                            set_sleep_flag_after_key_release(false);
+                            gAT_ctrl_env.upgrade_start = true;
+                            at_ota_init();
+                            sprintf((char *)at_rsp,"+MODE:U\r\nOK");
+                        }
+                        else
+                            sprintf((char *)at_rsp,"+MODE:U\r\nERR");
+                        at_send_rsp((char *)at_rsp);
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+        break;
+        case AT_CMD_IDX_SCAN:
+        {
+            switch(*buff++)
+            {
+                case '=':
+                {
+                    uint8_t scan_time = atoi((const char *)buff);
+                    if(scan_time > 0 && scan_time < 100)
+                        (__jump_table.GAP_TMR_GEN_DISC_SCAN_VAL) = scan_time*100;
+                }
+                break;
+            }
+            gAT_buff_env.default_info.role = 0;
+            if(appm_get_current_status() == APPM_ADVERTISING)
+            {
+                appm_stop_advertising();
+                appm_set_cb_func(APP_EVT_ID_ADV_END,at_start_scan);
+            }
+            else if(appm_get_current_status() == APPM_INITIATING)
+            {
+                appm_stop_connecting();
+                appm_set_cb_func(APP_EVT_ID_MASTER_CONNECT_FAILED,at_start_scan);
+            }
+            else
+                appm_start_scan(NULL);
+
+            appm_set_cb_func(APP_EVT_ID_SCAN_COMPLETED,at_scan_done);
+            appm_set_cb_func(APP_EVT_ID_ADV_REPORT,at_get_adv);
+
+            memset(gAT_buff_env.adv_rpt,0xff,sizeof(gAT_buff_env.adv_rpt));
+            gAT_ctrl_env.async_evt_on_going = 1;
+        }
+        break;
+        case AT_CMD_IDX_LINK:
+        {
+            switch(*buff++)
+            {
+                case '?':
+                {
+                    uint8_t mac_str[BD_ADDR_LEN*2+1];
+                    uint8_t link_mode;
+                    uint8_t encryption = 'N';
+                    sprintf((char *)at_rsp,"+LINK\r\nOK");
+                    at_send_rsp((char *)at_rsp);
+                    for(uint8_t i=0; i< BLE_CONNECTION_MAX; i++)
+                    {
+                        if(appm_get_connect_status(i))
+                        {
+                            if(gAT_buff_env.peer_param[i].link_mode ==1)
+                                link_mode = 'S';
+                            else
+                                link_mode = 'M';
+                            if(gAT_buff_env.peer_param[i].encryption)
+                                encryption = 'Y';
+                            else
+                                encryption = 'N';
+
+                            hex_arr_to_ascii_str(mac_str,gAT_buff_env.peer_param[i].conn_param.peer_addr.addr,BD_ADDR_LEN);
+                            mac_str[BD_ADDR_LEN*2] = 0;
+                            sprintf((char *)at_rsp,"Link_ID: %d LinkMode:%c Enc:%c PeerAddr:%s\r\n",i,link_mode,encryption,mac_str);
+                            uart_write((uint8_t *)at_rsp, strlen((const char *)at_rsp), NULL, NULL);
+                        }
+                        else
+                        {
+                            encryption = 'N';
+                            link_mode = 'N';
+                        }
+                    }
+                }
+                break;
+            }
+        }
+        break;
+        case AT_CMD_IDX_ENC:
+        {
+            switch(*buff++)
+            {
+                case '?':
+                {
+                    if(gAT_buff_env.default_info.encryption_link == 'M'
+                       || gAT_buff_env.default_info.encryption_link == 'B')
+                        sprintf((char *)at_rsp,"+ENC:%c\r\nOK",gAT_buff_env.default_info.encryption_link);
+                    else
+                        sprintf((char *)at_rsp,"+ENC:N\r\nOK");
+                    at_send_rsp((char *)at_rsp);
+                }
+                break;
+                case '=':
+                {
+                    if(*buff == 'M' || *buff == 'B')
+                    {
+                        gAT_buff_env.default_info.encryption_link = *buff;
+                        sprintf((char *)at_rsp,"+ENC:%c\r\nOK",*buff);
+                    }
+                    else
+                    {
+                        gAT_buff_env.default_info.encryption_link = 0;
+                        sprintf((char *)at_rsp,"+ENC:N\r\nOK");
+                    }
+                    at_send_rsp((char *)at_rsp);
+                }
+                break;
+            }
+        }
+        break;
+        case AT_CMD_IDX_DISCONN:
+        {
+            switch(*buff++)
+            {
+                case '=':
+                {
+                    if(*buff == 'A')
+                    {
+                        if(appm_get_connect_num()>0)
+                        {
+                            gAT_ctrl_env.async_evt_on_going = 1;
+                            for(uint8_t i = 0; i<BLE_CONNECTION_MAX; i++)
+                                appm_disconnect(i);
+                            appm_set_cb_func(APP_EVT_ID_DISCONNECTED,at_link_idle_status_hdl);
+                        }
+                    }
+                    else
+                    {
+                        uint8_t link_num = atoi((const char *)buff);
+
+                        if(appm_get_connect_status(link_num))
+                        {
+                            gAT_ctrl_env.async_evt_on_going = 1;
+                            appm_disconnect(link_num);
+                            appm_set_cb_func(APP_EVT_ID_DISCONNECTED,at_cb_disconnected);
+                        }
+                        else
+                        {
+                            sprintf((char *)at_rsp,"+DISCONN:%d\r\nERR",link_num);
+                            at_send_rsp((char *)at_rsp);
+                        }
+                    }
+                }
+                break;
+            }
+        }
+        break;
+        case AT_CMD_IDX_MAC:
+        {
+            uint8_t mac_str[BD_ADDR_LEN*2+1];
+            switch(*buff++)
+            {
+                case '?':
+                    hex_arr_to_ascii_str(mac_str,ble_get_addr(),BD_ADDR_LEN);
+                    mac_str[BD_ADDR_LEN*2] = 0;
+
+                    sprintf((char *)at_rsp,"+MAC:%s\r\nOK",mac_str);
+                    at_send_rsp((char *)at_rsp);
+                    break;
+                case '=':
+                {
+                    uint8_t * mac_addr = ble_get_addr();
+                    ascii_str_to_hex_arr(mac_addr,buff,BD_ADDR_LEN);
+                    hex_arr_to_ascii_str(mac_str,ble_get_addr(),BD_ADDR_LEN);
+                    mac_str[BD_ADDR_LEN*2] = 0;
+                    //at_store_info_to_flash();
+                    ble_set_addr(NULL);
+
+                    sprintf((char *)at_rsp,"+MAC:%s\r\nOK",mac_str);
+                    at_send_rsp((char *)at_rsp);
+                }
+                break;
+                default:
+                    break;
+            }
+        }
+        break;
+        case AT_CMD_IDX_CIVER:
+        {
+            switch(*buff++)
+            {
+                case '?':
+                    sprintf((char *)at_rsp,"+VER:%d.%d.%d:%d\r\nOK",VER_MAIN,VER_SUB,VER_DBG,AT_MAIN_VER);
+                    at_send_rsp((char *)at_rsp);
+                    break;
+                default:
+                    break;
+            }
+        }
+        break;
+        case AT_CMD_IDX_UART:
+        {
+            switch(*buff++)
+            {
+                case '?':
+                    sprintf((char *)at_rsp,"+UART:%d,%d,%d,%d\r\nOK",gAT_buff_env.uart_param.baud_rate,gAT_buff_env.uart_param.data_bit_num
+                            ,gAT_buff_env.uart_param.pari,gAT_buff_env.uart_param.stop_bit);
+                    at_send_rsp((char *)at_rsp);
+                    break;
+                case '=':
+                {
+                    uint8_t *pos_int_end;
+                    gAT_buff_env.uart_param.uart_idx = 0;
+                    pos_int_end = find_int_from_str(buff);
+                    gAT_buff_env.uart_param.baud_rate = atoi((const char *)buff);
+
+                    buff = pos_int_end+1;
+                    pos_int_end = find_int_from_str(buff);
+                    gAT_buff_env.uart_param.data_bit_num = atoi((const char *)buff);
+
+                    buff = pos_int_end+1;
+                    pos_int_end = find_int_from_str(buff);
+                    gAT_buff_env.uart_param.pari = atoi((const char *)buff);
+
+                    buff = pos_int_end+1;
+                    pos_int_end = find_int_from_str(buff);
+                    gAT_buff_env.uart_param.stop_bit = atoi((const char *)buff);
+                    //at_store_info_to_flash();
+
+                    sprintf((char *)at_rsp,"+UART:%d,%d,%d,%d\r\nOK",gAT_buff_env.uart_param.baud_rate,
+                            gAT_buff_env.uart_param.data_bit_num,gAT_buff_env.uart_param.pari,gAT_buff_env.uart_param.stop_bit);
+                    at_send_rsp((char *)at_rsp);
+                    uart_init_x(gAT_buff_env.uart_param);
+                }
+                break;
+                default:
+                    break;
+            }
+
+        }
+        break;
+        case AT_CMD_IDX_Z:
+        {
+            sprintf((char *)at_rsp,"+Z\r\nOK");
+            at_send_rsp((char *)at_rsp);
+            uart_finish_transfers();
+            //platform_reset(RESET_TO_ROM);
+            sys_soft_reset();
+        }
+        break;
+        case AT_CMD_IDX_CLR_BOND:
+        {
+            at_clr_gap_bond_info();
+            sprintf((char *)at_rsp,"+CLR_BOND\r\nOK");
+            at_send_rsp((char *)at_rsp);
+        }
+        break;
+        case AT_CMD_IDX_SLEEP:
+        {
+            switch(*buff++)
+            {
+                case '?':
+                    if(gAT_buff_env.default_info.auto_sleep == true)
+                        sprintf((char *)at_rsp,"+SLEEP:S\r\nOK");
+                    else
+                        sprintf((char *)at_rsp,"+SLEEP:E\r\nOK");
+                    at_send_rsp((char *)at_rsp);
+                    break;
+                case '=':
+                    if(*buff == 'S')
+                    {
+                        appm_sleep_start();
+                        gAT_buff_env.default_info.auto_sleep = true;
+                        set_sleep_flag_after_key_release(true);
+                        for(uint8_t i=0; i< BLE_CONNECTION_MAX; i++)
+                        {
+                            if(appm_get_connect_status(i))
+                                at_con_param_update(i,50);
+                        }
+                        sprintf((char *)at_rsp,"+SLEEP:S\r\nOK");
+                        at_send_rsp((char *)at_rsp);
+                    }
+                    else if(*buff == 'E')
+                    {
+                        appm_sleep_stop();
+                        gAT_buff_env.default_info.auto_sleep = false;
+                        set_sleep_flag_after_key_release(false);
+                        for(uint8_t i=0; i< BLE_CONNECTION_MAX; i++)
+                        {
+                            if(appm_get_connect_status(i))
+                                at_con_param_update(i,0);
+                        }
+                        sprintf((char *)at_rsp,"+SLEEP:E\r\nOK");
+                        at_send_rsp((char *)at_rsp);
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+        break;
+        case AT_CMD_IDX_CONNADD:
+        {
+            uint8_t peer_mac_addr_str[BD_ADDR_LEN*2+1];
+            switch(*buff++)
+            {
+                case '?':
+                    break;
+                case '=':
+                    ascii_str_to_hex_arr(gAT_buff_env.master_peer_param.conn_param.peer_addr.addr,buff,BD_ADDR_LEN);
+                    break;
+            }
+            hex_arr_to_ascii_str(peer_mac_addr_str,gAT_buff_env.master_peer_param.conn_param.peer_addr.addr,BD_ADDR_LEN);
+            peer_mac_addr_str[BD_ADDR_LEN*2] = 0;
+            sprintf((char *)at_rsp,"\r\n+CONNADD:%s\r\nOK",peer_mac_addr_str );
+            at_send_rsp((char *)at_rsp);
+        }
+        break;
+        case AT_CMD_IDX_CONN:
+        {
+            switch(*buff++)
+            {
+                case '=':
+                {
+                    uint8_t connect_idx = atoi((const char *)buff);
+
+                    if(appm_get_current_status()==APPM_READY) //no master link
+                    {
+                        memcpy(gAT_buff_env.master_peer_param.conn_param.peer_addr.addr, gAT_buff_env.adv_rpt[connect_idx].adv_addr.addr, BD_ADDR_LEN);
+                        gAT_buff_env.master_peer_param.conn_param.addr_type = gAT_buff_env.adv_rpt[connect_idx].adv_addr_type;
+                        gAT_buff_env.default_info.role = 2;
+                        appm_set_cb_func(APP_EVT_ID_DISCONNECTED,at_start_connecting);
+                        appm_set_cb_func(APP_EVT_ID_MASTER_CONNECT_FAILED,at_start_connecting);
+                        gAT_ctrl_env.async_evt_on_going = 1;
+                        at_start_connecting(NULL);
+                    }
+                    else
+                    {
+                        sprintf((char *)at_rsp,"+CONN:%d\r\nERR",connect_idx);
+                        at_send_rsp((char *)at_rsp);
+                    }
+                }
+                break;
+            }
+        }
+        break;
+
+        case AT_CMD_IDX_UUID:
+        {
+            uint8_t uuid_str_svc[ATT_UUID_128_LEN*2+1];
+            uint8_t uuid_str_tx[ATT_UUID_128_LEN*2+1];
+            uint8_t uuid_str_rx[ATT_UUID_128_LEN*2+1];
+            switch(*buff++)
+            {
+                case '?':
+                    hex_arr_to_ascii_str(uuid_str_svc,spss_uuids,ATT_UUID_128_LEN);
+                    uuid_str_svc[ATT_UUID_128_LEN*2] = 0;
+                    hex_arr_to_ascii_str(uuid_str_tx,spss_uuids + ATT_UUID_128_LEN,ATT_UUID_128_LEN);
+                    uuid_str_tx[ATT_UUID_128_LEN*2] = 0;
+                    hex_arr_to_ascii_str(uuid_str_rx,spss_uuids + ATT_UUID_128_LEN*2,ATT_UUID_128_LEN);
+                    uuid_str_rx[ATT_UUID_128_LEN*2] = 0;
+
+                    sprintf((char *)at_rsp,"+%s:\r\nDATA:UUID\r\n\r\n+%s:\r\nDATA:UUID\r\n\r\n+%s:\r\nDATA:UUID\r\n\r\nOK"
+                            ,uuid_str_svc,uuid_str_tx,uuid_str_rx);
+                    at_send_rsp((char *)at_rsp);
+                    break;
+
+                case '=':
+                    if( *buff == 'A' && *(buff+1) == 'A')
+                    {
+                        ascii_str_to_hex_arr(spss_uuids,buff+3,ATT_UUID_128_LEN);
+                        user_change_svc_uuid(spss_profile_id,SPS_PRIM_SVC,spss_uuids,ATT_UUID_128_LEN);
+                    }
+                    if( *buff == 'B' && *(buff+1) == 'B')
+                    {
+                        ascii_str_to_hex_arr(spss_uuids + ATT_UUID_128_LEN,buff+3,ATT_UUID_128_LEN);
+                        user_change_svc_uuid(spss_profile_id,SPS_SERVER_TX_DATA_VAL,spss_uuids + ATT_UUID_128_LEN,ATT_UUID_128_LEN);
+                    }
+                    if( *buff == 'C' && *(buff+1) == 'C')
+                    {
+                        ascii_str_to_hex_arr(spss_uuids + ATT_UUID_128_LEN*2,buff+3,ATT_UUID_128_LEN);
+                        user_change_svc_uuid(spss_profile_id,SPS_SERVER_RX_DATA_VAL,spss_uuids + ATT_UUID_128_LEN*2,ATT_UUID_128_LEN);
+                    }
+                    *(buff+3 + ATT_UUID_128_LEN*2) = 0;
+
+                    //at_store_info_to_flash();
+
+                    sprintf((char *)at_rsp,"+%s:\r\nDATA:UUID\r\n\r\nsuccessful",buff+3);
+                    at_send_rsp((char *)at_rsp);
+                    break;
+
+                default:
+                    break;
+            }
+        }
+        break;
+        case AT_CMD_IDX_FLASH:            //store param
+        {
+            at_store_info_to_flash();
+            sprintf((char *)at_rsp,"+FLASH\r\nOK");
+            at_send_rsp((char *)at_rsp);
+        }
+        break;
+        case AT_CMD_IDX_SEND:
+        {
+            switch(*buff++)
+            {
+                case '=':
+                {
+                    uint8_t *pos_int_end;
+                    pos_int_end = find_int_from_str(buff);
+                    uint8_t conidx = atoi((const char *)buff);
+
+                    buff = pos_int_end+1;
+                    pos_int_end = find_int_from_str(buff);
+                    uint32_t len = atoi((const char *)buff);
+
+                    if(appm_get_connect_status(conidx) && gAT_ctrl_env.one_slot_send_start == false)
+                    {
+                        gAT_ctrl_env.transparent_conidx = conidx;
+                        gAT_ctrl_env.one_slot_send_len = len;
+                        gAT_ctrl_env.one_slot_send_start = true;
+                        at_clr_uart_buff();
+                        sprintf((char *)at_rsp,">");
+                    }
+                    else
+                        sprintf((char *)at_rsp,"+SEND\r\nERR");
+
+                    at_send_rsp((char *)at_rsp);
+                }
+                break;
+            }
+        }
+        break;
+        case AT_CMD_IDX_TRANSPARENT:            //go to transparent transmit
+        {
+            if(appm_get_connect_num()==1)
+            {
+                //printf("%d,%d\r\n",app_env.conidx,gAT_buff_env.peer_param[app_env.conidx].link_mode);
+                gAT_ctrl_env.transparent_start = 1;
+                at_clr_uart_buff();
+                gAT_ctrl_env.transparent_conidx = app_env.conidx;
+                if(gAT_buff_env.peer_param[app_env.conidx].link_mode == 1)
+                    spss_recv_data_ind_func = at_spss_recv_data_ind_func;
+                else if(gAT_buff_env.peer_param[app_env.conidx].link_mode == 2)
+                    spsc_recv_data_ind_func = at_spsc_recv_data_ind_func;
+                //app_spss_send_ble_flowctrl(160);
+                sprintf((char *)at_rsp,"+++\r\nOK");
+            }
+            else
+                sprintf((char *)at_rsp,"+++\r\nERR");
+            at_send_rsp((char *)at_rsp);
+        }
+        break;
+        case AT_CMD_IDX_AUTO_TRANSPARENT:            //go to transparent transmit
+        {
+            switch(*buff++)
+            {
+                case '?':
+                    if(gAT_buff_env.default_info.auto_transparent == true)
+                        sprintf((char *)at_rsp,"+AUTO+++:Y\r\nOK");
+                    else
+                        sprintf((char *)at_rsp,"+AUTO+++:N\r\nOK");
+                    at_send_rsp((char *)at_rsp);
+                    break;
+                case '=':
+                    if(*buff == 'Y')
+                    {
+                        gAT_buff_env.default_info.auto_transparent = true;
+                        sprintf((char *)at_rsp,"+AUTO+++:Y\r\nOK");
+                    }
+                    else if(*buff == 'N')
+                    {
+                        gAT_buff_env.default_info.auto_transparent = false;
+                        sprintf((char *)at_rsp,"+AUTO+++:N\r\nOK");
+                    }
+                    at_send_rsp((char *)at_rsp);
+                    break;
+                default:
+                    break;
+            }
+        }
+        break;
+        case AT_CMD_IDX_POWER:            //rf_power set/req
+        {
+            switch(*buff++)
+            {
+                case '?':
+                    sprintf((char *)at_rsp,"+POWER:%d\r\nOK",gAT_buff_env.default_info.rf_power);
+                    at_send_rsp((char *)at_rsp);
+                    break;
+                case '=':
+                    gAT_buff_env.default_info.rf_power = atoi((const char *)buff);
+                    if(gAT_buff_env.default_info.rf_power > 5)
+                        sprintf((char *)at_rsp,"+POWER:%d\r\nERR",gAT_buff_env.default_info.rf_power);
+                    else
+                    {
+                        rf_set_tx_power(rf_power_arr[gAT_buff_env.default_info.rf_power]);
+                        sprintf((char *)at_rsp,"+POWER:%d\r\nOK",gAT_buff_env.default_info.rf_power);
+                    }
+                    at_send_rsp((char *)at_rsp);
+                    break;
+                default:
+                    break;
+            }
+        }
+        break;
+        case AT_CMD_IDX_ADVINT:            //rf_power set/req
+        {
+            switch(*buff++)
+            {
+                case '?':
+                    sprintf((char *)at_rsp,"+ADVINT:%d\r\nOK",gAT_buff_env.default_info.adv_int);
+                    at_send_rsp((char *)at_rsp);
+                    break;
+                case '=':
+                {
+                    uint8_t tmp = gAT_buff_env.default_info.adv_int;
+                    gAT_buff_env.default_info.adv_int = atoi((const char *)buff);
+                    if(gAT_buff_env.default_info.adv_int > 5)
+                    {
+                        sprintf((char *)at_rsp,"+ADVINT:%d\r\nERR",gAT_buff_env.default_info.adv_int);
+                        gAT_buff_env.default_info.adv_int = tmp;
+                    }
+                    else
+                    {
+                        sprintf((char *)at_rsp,"+ADVINT:%d\r\nOK",gAT_buff_env.default_info.adv_int);
+                    }
+                    at_send_rsp((char *)at_rsp);
+                }
+                break;
+                default:
+                    break;
+            }
+        }
+        break;
+        default:
+            break;
+    }
+_exit:
+    os_free(at_rsp);
+_out:
+    ;
+}
+
+void atuo_transparent_set(void)
+{
+    if(gAT_buff_env.default_info.auto_transparent == true)
+    {
+        at_clr_uart_buff();
+        gAT_ctrl_env.transparent_start = 1;
+        if(gAT_buff_env.peer_param[app_env.conidx].link_mode == 1)
+            spss_recv_data_ind_func = at_spss_recv_data_ind_func;
+        else if(gAT_buff_env.peer_param[app_env.conidx].link_mode == 2)
+            spsc_recv_data_ind_func = at_spsc_recv_data_ind_func;
+    }
+}
+
+void atuo_transparent_clr(void)
+{
+    if(gAT_ctrl_env.transparent_start)
+    {
+        gAT_ctrl_env.transparent_start = 0;
+        at_clr_uart_buff();
+        spss_recv_data_ind_func = NULL;
+        spsc_recv_data_ind_func = NULL;
+    }
+}
+//lin func--------------------------------------------------------
+void read_list(void)//读取列表****************************************************************************************
+{
+	uint16_t read_size;
+	uint8_t *read_size_buf; 
+	uint8_t cnt = 0;
+
+	read_size = 801;
+	read_size_buf = os_malloc(read_size,KE_MEM_NON_RETENTION);//申请空间
+	
+	//jilu_data.index=0x06;
+	//memcpy( read_size_buf, jilu_data.jilu,801);
+	//flash_erase(0x31000, 0);
+	//flash_write_with_check(0x31000, read_size, read_size_buf);//存储起来
+	
+	flash_read(0x31000, read_size, read_size_buf);
+	jilu_data.index=read_size_buf[800];
+	//memcpy(&jilu_data.index, read_size_buf+800, 1);
+	for(cnt=0;cnt<50;cnt++)
+	{
+		memcpy(&jilu_data.jilu[cnt], read_size_buf+(cnt)*16, 16);
+	}
+	printf("the save index is:%d,%d\r\n",jilu_data.index,read_size_buf[800]);
+	printf("the rest time is:%d \r\n",jilu_data.jilu[0].time);
+	os_free(read_size_buf);//释放空间
+}
+//---------------开机就设置透传-----------------------------------
+void power_on_init(void)
+{	 
+
+	//read_information();//读取falsh数据，首次的话会设置默认初始数据
+
+	//ADV_LED_INIT;//pc2初始化为0
+  //BLE_LIGHT_ON				   //点亮
+	SPEAKER_PLAY_INIT;
+	SPEAKER_PLAY_LOW;        //扬声器控制端口
+	NFC_ON;
+	NFC_LIGHT_OFF          //NFC刷卡成功指示灯
+	spss_recv_data_ind_func = at_spss_recv_data_ind_func;//从机接收主机数据处理函数
+	//rf_set_tx_power(rf_power_arr[2]);//发射功率0x10
+	//rf_set_tx_power_source(1);//0表示射频工作电源为VBAT；  1表示射频工作电源为数字电路1.2V
+	//gAT_ctrl_env.transparent_start = 1;//开启mcu-->ble串口透传标志
+
+	//端口初始化
+	//fr8016_io_init();
+	//appm_sleep_start();
+	which_song(POWER_ON_MUSIC); //定时器初始化 开机音乐响起来  理论值160毫秒左右发完
+	nfcinit_timer_start();//nfc初始化定时器启动
+
+}
+
+//----------------------------生成随机MAC地址--------------------------------
+void set_rand_mac(void)
+{
+	uint32_t temp1;
+	temp1 = appm_get_rand_low4byte_mac();
+	sys_config.mac_store[0] = (uint8_t)(temp1 & 0xff);
+	sys_config.mac_store[1] = (uint8_t)((temp1 >> 8) & 0xff);
+	sys_config.mac_store[2] = (uint8_t)((temp1 >> 16) & 0xff);
+	sys_config.mac_store[3] = (uint8_t)(((temp1 >> 16)>>8) & 0xff);
+	sys_config.mac_store[4] = sys_config.mac_store[0] & 0x55 & sys_config.mac_store[1];
+	sys_config.mac_store[5] = sys_config.mac_store[1] & sys_config.mac_store[2] & 0xaa;	
+	
+	//sprintf(sys_config.mac_store, temp);     //设备名称  此处等同于  osal_memcpy 
+	//printf("the set_rand_mac:");
+	//show_reg2(sys_config.mac_store,6,1);//以十六进制打印
+	//printf("the set_rand_mac:%02x,%02x,%02x,%02x,%02x,%02x\r\n",sys_config.mac_store[0],sys_config.mac_store[1],sys_config.mac_store[2],sys_config.mac_store[3],sys_config.mac_store[4],sys_config.mac_store[5]);
+}
+
+//----------设置名字-------------------------------------------
+void set_BLE_NAME(void)
+{
+  uint8_t num_buff[]={'0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'};
+  uint8_t temp;
+ 
+  {
+        sprintf((char*)sys_config.name, BLE_NAME);     //设备名称  此处等同于  osal_memcpy         
+        temp = strlen(BLE_NAME); 
+        sys_config.name[temp]=num_buff[(sys_config.mac_store[0])>>4];
+        sys_config.name[temp+1]=num_buff[(sys_config.mac_store[0])&(0x0f)];  // 广播的MAC地址 低字节0
+        sys_config.name[temp+2]=num_buff[(sys_config.mac_store[1])>>4];		 // 广播的MAC地址 低字节0
+        sys_config.name[temp+3]=num_buff[(sys_config.mac_store[1])&(0x0f)];
+        sys_config.name[temp+4]=num_buff[(sys_config.mac_store[2])>>4];      // 广播的MAC地址 低字节0
+        sys_config.name[temp+5]=num_buff[(sys_config.mac_store[2])&0x0f];    // 广播的MAC地址 低字节0
+        //sys_config.name[temp+6]=num_buff[(sys_config.mac_store[3])&0x0f];  // 广播的MAC地址 低字节0
+
+  }
+  memcpy(app_device_name,sys_config.name,15);
+  
+}
+
+//---------设置默认参数--------------------------------------
+void SetAllParaDefault(void)
+{
+	uint8_t i=0;
+	sys_config.write_flag[0] = 1;	   //写入标志
+    set_rand_mac();//获取固定的mac地址
+    //printf("SetAllParaDefault rand_mac:%02x,%02x,%02x,%02x,%02x,%02x\r\n",sys_config.mac_store[0],sys_config.mac_store[1],sys_config.mac_store[2],sys_config.mac_store[3],sys_config.mac_store[4],sys_config.mac_store[5]);
+
+	ble_set_addr(sys_config.mac_store);//设置本机的mac地址
+	set_BLE_NAME();//名字
+	//sys_config.DevID = {0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff};
+	//memset(sys_config.DevID,0x00,15);
+	//sprintf((char*)sys_config.CARD_ID, "0000");      //密码 不要使用这句话
+	sys_config.CARD_ID[0]=48;sys_config.CARD_ID[1]=48;sys_config.CARD_ID[2]=48;sys_config.CARD_ID[3]=48;
+	//printf("SetAllPara rand_mac:%02x,%02x,%02x,%02x,%02x,%02x\r\n",sys_config.mac_store[0],sys_config.mac_store[1],sys_config.mac_store[2],sys_config.mac_store[3],sys_config.mac_store[4],sys_config.mac_store[5]);
+
+	for(i=0;i<12;i++) {sys_config.identity1[i]=0;}//身份1初始化
+	for(i=0;i<12;i++) {sys_config.identity2[i]=0;}//身份2初始化
+	for(i=0;i<12;i++) {sys_config.identity3[i]=0;}//身份3初始化
+	for(i=0;i<12;i++) {sys_config.identity4[i]=0;}//身份4初始化
+	for(i=0;i<12;i++) {sys_config.identity5[i]=0;}//身份5初始化
+}
+
+//---------上电读取存储信息，首次为空进行一次写操作-------------
+void read_information(void)
+{
+	uint8_t read_size;
+	uint8_t *read_size_buf; 
+	uint8_t cnt = 0;
+
+	read_size = sizeof(SYS_CONFIG);
+	read_size_buf = os_malloc(read_size,KE_MEM_NON_RETENTION);//申请空间
+	//flash_erase(0x30000, 0);
+	flash_read(0x30000, read_size, read_size_buf);
+
+	memcpy(sys_config.write_flag, read_size_buf, 1);	   //写入标志
+	memcpy(sys_config.name, read_size_buf+1, 16);          //读的时候知道是几个字符，不然会有问号
+	memcpy(sys_config.CARD_ID, read_size_buf+17, 4);       //卡号
+	memcpy(sys_config.mac_store, read_size_buf+21, 6);     //mac地址
+	memcpy(sys_config.identity1, read_size_buf+27, 12);     //身份1(场馆1，柜号2，身份1，密码8)
+	memcpy(sys_config.identity2, read_size_buf+39, 12);     //身份2(场馆，柜号，身份，密码)
+	memcpy(sys_config.identity3, read_size_buf+51, 12);     //身份3(场馆，柜号，身份，密码)
+	memcpy(sys_config.identity4, read_size_buf+63, 12);     //身份4(场馆，柜号，身份，密码)
+	memcpy(sys_config.identity5, read_size_buf+75, 12);     //身份5(场馆，柜号，身份，密码)
+	printf("read_information flag is:%d\r\n",sys_config.write_flag[0]);
+	printf("read_information name is:%s\r\n",sys_config.name);
+	printf("read_information card is:%02x,%02x,%02x,%02x\r\n",sys_config.CARD_ID[0],sys_config.CARD_ID[1],sys_config.CARD_ID[2],sys_config.CARD_ID[3]);
+    printf("read_information mac is:%02x,%02x,%02x,%02x,%02x,%02x\r\n",sys_config.mac_store[0],sys_config.mac_store[1],sys_config.mac_store[2],sys_config.mac_store[3],sys_config.mac_store[4],sys_config.mac_store[5]);
+
+	//printf("the mac_store is:");
+	//show_reg2(sys_config.mac_store,6,1);//以十六进制打印
+	if(sys_config.write_flag[0] == 1)//说明保存过了,非第一次上电
+	{
+		ble_set_addr(sys_config.mac_store);//广播MAC地址
+		do{
+	        cnt++;
+   	      } while(sys_config.name[cnt] != 0xff);//这里的目的是未写入的字节是0xff,清理后的内容也是0xff
+		memcpy(app_device_name,sys_config.name,cnt);//名字
+	}
+	else
+	{
+		SetAllParaDefault();//设置默认的信息参数
+		printf("the mac write before is:%02x,%02x,%02x,%02x,%02x,%02x\r\n",sys_config.mac_store[0],sys_config.mac_store[1],sys_config.mac_store[2],sys_config.mac_store[3],sys_config.mac_store[4],sys_config.mac_store[5]);
+
+		memcpy( read_size_buf, sys_config.write_flag,1);//写入标志
+		memcpy( read_size_buf+1,sys_config.name,16);    //蓝牙名称
+		memcpy( read_size_buf+17,sys_config.CARD_ID,4);   //nfc卡号
+		memcpy( read_size_buf+21,sys_config.mac_store,6);   //mac地址
+		memcpy( read_size_buf+27,sys_config.identity1,12);//存身份1
+		memcpy( read_size_buf+39,sys_config.identity2,12);//存身份2
+		memcpy( read_size_buf+51,sys_config.identity3,12);//存身份3
+		memcpy( read_size_buf+63,sys_config.identity4,12);//存身份4
+		memcpy( read_size_buf+75,sys_config.identity5,12);//存身份5
+		flash_erase(0x30000, 0);
+		flash_write_with_check(0x30000, read_size, read_size_buf);//存储起来
+
+		//写完之后读出来验证一下
+		/*flash_read(0x69000, read_size, read_size_buf);
+		memcpy(sys_config.write_flag, read_size_buf, 1);	   //写入标志
+		memcpy(sys_config.name, read_size_buf+1, 16);          //读的时候知道是几个字符，不然会有问号
+		memcpy(sys_config.CARD_ID, read_size_buf+17, 4);       //卡号
+		memcpy(sys_config.mac_store, read_size_buf+21, 6);     //mac地址
+		printf("the write flag is:%d\r\n",sys_config.write_flag[0]);
+		printf("the name is:%s\r\n",sys_config.name);
+		printf("the card is:%02x,%02x,%02x,%02x\r\n",sys_config.CARD_ID[0],sys_config.CARD_ID[1],sys_config.CARD_ID[2],sys_config.CARD_ID[3]);
+	    printf("the mac is:%02x,%02x,%02x,%02x,%02x,%02x\r\n",sys_config.mac_store[0],sys_config.mac_store[1],sys_config.mac_store[2],sys_config.mac_store[3],sys_config.mac_store[4],sys_config.mac_store[5]);
+		*/
+		
+	}
+	//show_reg2(aes_result,KEY_LEN,1);
+	//appm_use_aes128_block(KEY_VAL,jiamishu,get_aes128_rst);//AES加密测试
+	os_free(read_size_buf);//释放空间
+
+}
+
+//----------------------------手机APP读取nfc卡号-----------------------------------
+void read_card_id(void)
+{
+	uint8_t read_size;
+	uint8_t *read_size_buf; 
+
+	read_size = sizeof(SYS_CONFIG);
+	read_size_buf = os_malloc(read_size,KE_MEM_NON_RETENTION);//申请空间
+	flash_read(0x30000, read_size, read_size_buf);
+
+	//memcpy(sys_config.write_flag, read_size_buf, 1);	   //写入标志
+	//memcpy(sys_config.name, read_size_buf+1, 16);          //读的时候知道是几个字符，不然会有问号
+	memcpy(sys_config.CARD_ID, read_size_buf+17, 4);       //卡号
+	//memcpy(sys_config.mac_store, read_size_buf+21, 6);     //mac地址
+	memcpy(sys_config.identity1, read_size_buf+27, 12);     //身份1(场馆1，柜号2，身份1，密码8)
+	memcpy(sys_config.identity2, read_size_buf+39, 12);     //身份2(场馆，柜号，身份，密码)
+	memcpy(sys_config.identity3, read_size_buf+51, 12);     //身份3(场馆，柜号，身份，密码)
+	memcpy(sys_config.identity4, read_size_buf+63, 12);     //身份4(场馆，柜号，身份，密码)
+	memcpy(sys_config.identity5, read_size_buf+75, 12);     //身份5(场馆，柜号，身份，密码)
+	
+	//printf("the write flag is:%d\r\n",sys_config.write_flag[0]);
+	//printf("the name is:%s\r\n",sys_config.name);
+	//printf("the read card_id is:%02x,%02x,%02x,%02x\r\n",sys_config.CARD_ID[0],sys_config.CARD_ID[1],sys_config.CARD_ID[2],sys_config.CARD_ID[3]);
+	os_free(read_size_buf);//释放空间
+
+}
+
+//---------------蓝牙接收app数据处理函数--------------------------
+void BLE_ReceiveHandle(uint8_t *buff,uint8_t len)
+{
+	if(len==0) return ; //无数据直接返回
+	APP_SetBLE(buff,len);//app->ble指令处理
+}
+
+//---------------累加校验和---------------------------------------
+uint8_t CLU_check(uint8_t *buff,uint8_t size)
+{
+	uint8_t sum=0;
+	while(size--)
+	{
+		sum+=*(buff++);
+	}
+	return sum;
+}
+
+//-------------保存数据到flash--------------------------------
+uint8_t write_to_flash(void)
+{
+	uint8_t read_size;
+	uint8_t *read_size_buf; 
+	read_size = sizeof(SYS_CONFIG);
+	read_size_buf = os_malloc(read_size,KE_MEM_NON_RETENTION);//申请空间
+	memcpy( read_size_buf, sys_config.write_flag,1);
+	memcpy( read_size_buf+1,sys_config.name,16);
+	memcpy( read_size_buf+17,sys_config.CARD_ID,4);
+	memcpy( read_size_buf+21,sys_config.mac_store,6);
+	memcpy( read_size_buf+27,sys_config.identity1,12);//存身份1
+	memcpy( read_size_buf+39,sys_config.identity2,12);//存身份2
+	memcpy( read_size_buf+51,sys_config.identity3,12);//存身份3
+	memcpy( read_size_buf+63,sys_config.identity4,12);//存身份4
+	memcpy( read_size_buf+75,sys_config.identity5,12);//存身份5
+	flash_erase(0x30000, 0);//写入新东西之前，先清除
+	flash_write_with_check(0x30000, read_size, read_size_buf);//存储起来
+	os_free(read_size_buf);//释放空间
+	return SUCCESS;
+	//at_send_rsp("is the first:");	
+}
+
+//---------认证超时，断开蓝牙连接---------------------------
+void disconnect_timer_handler(void *arg)
+{
+	//printf("3s is over!!!");
+	//printf("\r\n");
+	appm_disconnect(app_env.conidx);
+	os_timer_disarm(&disconnect_timer);
+}
+//---------放置定时器，3秒计时开始--------------------------
+void time_start_3s(void)
+{
+	//Ptimer，定时器变量，Pfunction，定时器的执行函数，Parg，定时器执行函数的输入参数指针
+	  os_timer_disarm(&disconnect_timer);//用于停止某个定时器
+    os_timer_setfn(&disconnect_timer,disconnect_timer_handler,NULL);//定时器的处理回调函数
+    os_timer_arm(&disconnect_timer,5000,0);//开启一次3000ms定时活动
+}
+//---------用于停止某个定时器-------------------------------
+void time_stop_3s(void)
+{
+	os_timer_disarm(&disconnect_timer);//用于停止某个定时器
+	//printf("AES is pass!");
+	//printf("\r\n");
+}
+//---------nfc初始化事件处理---------------------------
+void nfcinit_timer_handler(void *arg)
+{
+	//printf("3s is over!!!");
+	//printf("\r\n");
+	//os_timer_disarm(&nfc_init_timer);
+	//which_song(POWER_ON_MUSIC); //定时器初始化 开机音乐响起来  理论值160毫秒左右发完
+	systerm_ok=1;//系统稳定标志
+	fr8016_io_init();
+	//printf("nfc init start!!!\r\n");
+}
+//---------nfc定时器启动-------------------------------
+void nfcinit_timer_start(void)
+{
+	//Ptimer，定时器变量，Pfunction，定时器的执行函数，Parg，定时器执行函数的输入参数指针
+	  os_timer_disarm(&nfc_init_timer);//用于停止某个定时器
+    os_timer_setfn(&nfc_init_timer,nfcinit_timer_handler,NULL);//定时器的处理回调函数
+    os_timer_arm(&nfc_init_timer,3000,0);//开启一次3000ms定时活动
+}
+//---------nfc定时器结束-------------------------------
+void nfcinit_timer_stop(void)
+{
+	os_timer_disarm(&nfc_init_timer);//用于停止某个定时器
+	//printf("AES is pass!");
+	//printf("\r\n");
+}
+
+//---------------ble对app一些设置指令的响应------------------------
+char APP_SetBLE(uint8_t *buff,uint16_t len)
+{	
+  uint8_t s_buff[20]={0x55,0xAA,0x03,0x00,0x00,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff};//回复app
+  //uint8_t ss_buff[6]={0x55,0xAA,0x03,0x00,0x00,0xff};//回复合泰
+	char state=0;
+	uint8_t j = 0;
+	//uint8_t door_state = 0;
+
+	//printf("the original data is: ");
+	//show_reg2(buff,len,1);	
+	if(	len==(buff[2]+3))//核对包长度
+	{
+		if( (buff[0]==HEAD1)&&(buff[1]==HEAD2) )//核对包头
+		{
+			if(CLU_check(&buff[2],buff[2])==buff[len-1])//比对校验和
+			{
+				if((buff[3]==FUNC_ENCRYPT_RESULT)||(buff[3]==FUNC_WRITE_CARD)||(buff[3]==FUNC_READ_CARD)\
+			        ||(buff[3]==FUNC_SET_NAME)||(buff[3]==FUNC_GET_BATTERY)||(buff[3]==FUNC_OPEN_DOOR)||(buff[3]==FUNC_GET_PHONESECRET))
+			    {
+			    	s_buff[3]=buff[3]|0x80;//计算好功能码
+					switch(buff[3])
+					{
+						case FUNC_ENCRYPT_RESULT:
+							if(BLE_flag!=1) return 0;//没aes加密直接返回
+							s_buff[2]=3;
+	                        if((buff[4])==1)
+	                        {                                                     
+	                             BLE_flag=2;  
+								 s_buff[4]= 1;//回复1通知成功
+								 #if DELAY_DISCONNECT
+								 	time_stop_3s();//在3秒内认证通过，关闭断连定时器
+								 #endif
+	                        }
+							else
+							{
+								s_buff[4]= 2;//回复2通知失败
+								printf("the notification result error: %d\r\n",buff[4]);
+							}
+	                        state=1;
+							break;
+						case FUNC_SET_NAME:
+							if(BLE_flag!=2) return 0;//认证没过，直接返回
+							s_buff[2]=3;
+	            if((buff[2]-2)<=16)//名字长度不能超过16个
+	            {
+	              memset(sys_config.name,0xff,16);//设备名称最长16个字节 置0xff
+	              memcpy(sys_config.name,&buff[4],buff[2]-2);
+	              if(write_to_flash()==SUCCESS)
+	              {
+	                s_buff[4]=1;//设置成功
+	                memcpy(app_device_name,sys_config.name,buff[2]-2);
+							    app_device_name[buff[2]-2] = '\0';
+	              }  
+								else
+								{
+									s_buff[4]=2;//设置失败
+								}
+	            }
+							else 
+							{
+								printf("name too long!");
+							}                        	
+	            state=1;
+							break;
+						case FUNC_GET_PHONESECRET:
+							if(BLE_flag!=2) return 0;
+							if(8==buff[2])
+							{
+								all_phone.index=all_phone.index+1;
+								if(all_phone.index>0)
+								{
+									all_phone.index=0;
+								}
+								
+								all_phone.shijian[all_phone.index]=buff[8]+buff[9]*256;
+								
+								//memcpy(all_phone.shijian[all_phone.index],&buff[8],2);//shixian
+								//memcpy(set_ht_secret,&buff[4],4);
+								s_buff[2]=0X07;//长度
+								memcpy(&s_buff[4],&buff[4],4);//原样返回
+								
+
+								if(all_phone.shijian[all_phone.index]>0)
+								{
+									memcpy(all_phone.haoma[all_phone.index],&buff[4],4);//haoma
+									write_phone_flash();//save phone number
+									s_buff[8]=0X01;//获取成功
+								}
+								else
+								{
+									s_buff[8]=0X02;//获取失败
+									printf("Set time is 0!\r\n");
+								}
+							}
+							else
+							{
+								printf("phone secret long!\r\n");
+								appm_disconnect(app_env.conidx);//断开蓝牙
+							}
+							state=1;
+							break;
+						case FUNC_WRITE_CARD:
+							if(BLE_flag!=2) return 0;
+							if((buff[2]-2)<=12)
+							{
+								if(buff[7]==1) memcpy(sys_config.identity1,&buff[4],buff[2]-2);
+								if(buff[7]==2) memcpy(sys_config.identity2,&buff[4],buff[2]-2);
+								if(buff[7]==3) memcpy(sys_config.identity3,&buff[4],buff[2]-2);
+								if(buff[7]==4) memcpy(sys_config.identity4,&buff[4],buff[2]-2);
+								if(buff[7]==5) memcpy(sys_config.identity5,&buff[4],buff[2]-2);
+								if(write_to_flash()!=SUCCESS)//写入失败
+								{
+									s_buff[2]=0x04;s_buff[4]=buff[7];s_buff[5]=0x02;
+									state=1;
+								}
+								else//写入成功
+								{
+									s_buff[2]=0x04;s_buff[4]=buff[7];s_buff[5]=0x01;
+									state=1;
+								}
+							}
+							else
+							{
+								printf("the card_id is too long!\r\n");
+							}
+							break;
+						case FUNC_READ_CARD:
+							 if(BLE_flag!=2) return 0;
+							 read_card_id();//读出保存的配置信息
+							 if(buff[4]==1) memcpy(&s_buff[4],sys_config.identity1,12);
+						   if(buff[4]==2) memcpy(&s_buff[4],sys_config.identity2,12);
+							 if(buff[4]==3) memcpy(&s_buff[4],sys_config.identity3,12);
+						   if(buff[4]==4) memcpy(&s_buff[4],sys_config.identity4,12);
+							 if(buff[4]==5) memcpy(&s_buff[4],sys_config.identity5,12);
+							 s_buff[2]=14;//长度
+							 state=1;
+							 break;
+						case FUNC_GET_BATTERY:
+
+							break;
+						case FUNC_OPEN_DOOR:
+							if(opening_door_flag ==1) return 1;//正在打开中，屏蔽现有触发
+							motor_run_error_timer_stop();//停止电机运行出错定时器
+							//read_card_id();//读出保存的卡号
+							//if( memcmp(sys_config.CARD_ID,&buff[4],4) == 0 )//密钥一致
+						//printf("mac_store=%02x:%02x:%02x:%02x:%02x:%02x\r\n",sys_config.mac_store[0],sys_config.mac_store[1],sys_config.mac_store[2],sys_config.mac_store[3],sys_config.mac_store[4],sys_config.mac_store[5]);
+						//printf("buff=%02x:%02x:%02x:%02x:%02x:%02x\r\n",buff[4],buff[5],buff[6],buff[7],buff[8],buff[9]);
+						if( (memcmp(sys_config.mac_store,&buff[4],6) == 0) || 
+								( (sys_config.mac_store[0]==buff[9])&&(sys_config.mac_store[1]==buff[8])&&(sys_config.mac_store[2]==buff[7])&&
+									(sys_config.mac_store[3]==buff[6])&&(sys_config.mac_store[4]==buff[5])&&(sys_config.mac_store[5]==buff[4])
+								)
+						  ) 			
+							{
+								 printf("the mac is same!\r\n");//mac地址一致		
+								 //door_state = gpio_porta_read();	//获取门的状态
+//								 if(door_state == 0x01) //门是打开的
+//								 {
+//									memcpy(&s_buff[4],sys_config.mac_store,6);
+//									s_buff[2]=9;//长度
+//									s_buff[10]=1;
+//									state=1;
+//								 }
+//								 else
+								 {
+									//抛出开锁消息
+									opening_door_flag =1;
+									os_event_t evt;
+							        evt.event_id = motor_run_event;
+							        evt.param_len = 0;
+							        evt.param = NULL;
+							        evt.src_task_id = TASK_NONE;
+							        os_msg_post(ble_motor_task_id,&evt);
+									motor_run_error_timer_init();//电机运行出错定时器初始化
+									return 1;
+								 }
+								 
+							}
+						else 
+							{
+								//ss_buff[3]=0x81;ss_buff[4]=0x02;ss_buff[5]=0x85;//55 AA 03 81 02 85 //开锁出错提示音
+								//uart_write(ss_buff, 6, NULL, NULL);
+								//cishu_flag=0;
+								printf("mac not same!\r\n");
+								//lanya_error_timer_init();								
+							}
+							break;
+						default:s_buff[2]=3;s_buff[4]=0xff;
+								state=1;
+                           break;
+					}
+					
+				}
+
+				else
+				{
+				    s_buff[2]=3;s_buff[4]=0xff;
+					s_buff[3]=buff[3]|0x80;//计算好功能码
+					state=1;
+					printf("the app_pack's command wrong:%02x\r\n",buff[3]);
+				}
+			}
+			else if(buff[3]==FUNC_ENCRYPT_CMD)//aes128加密 加密是没有校验和的
+			{
+				s1_buff[2]=17;
+        		s1_buff[3]=buff[3]|0x80;              
+            	//LL_Encrypt(KEY_VAL,&buff[4],&s_buff[4]);//固定16个字节加密 ECB加密
+            	for(j=0;j<16;j++)//取出需要加密的明文，倒序排放，因为是小端模式
+            	{
+					plaintext[j] = buff[15-j+4];
+				}
+				printf("the plaintext is: ");
+	        	show_reg2(&buff[4],16,1);
+	        	appm_use_aes128_block((uint8_t *)KEY_VAL,plaintext,get_aes128_rst);//aes加密好后存在aes_result
+	            state=2;
+			}	
+			else
+			{	s_buff[2]=3;s_buff[4]=0xff;
+				s_buff[3]=buff[3]|0x80;//计算好功能码
+				state=1;
+				printf("the app_pack's sum wrong:%02x,%02x\r\n",CLU_check(&buff[2],buff[2]),buff[len-1]);
+			}
+		}
+
+		else
+		{
+			s_buff[2]=3;s_buff[4]=0xff;
+			s_buff[3]=buff[3]|0x80;//计算好功能码
+			state=1;
+			printf("the app_pack's header wrong:%02x,%02x\r\n",buff[0],buff[1]);
+		}
+		
+	}
+	else
+	{
+		s_buff[2]=3;s_buff[4]=0xff;
+		s_buff[3]=buff[3]|0x80;//计算好功能码
+		state=1;
+		printf("the app_pack's length wrong:\r\n");
+		printf("the app_pack is:");
+		show_reg2(buff,len,1);
+		printf("the length is: %d\r\n",len);
+	}
+	if(state==1)//统一回复主机
+	{
+		s_buff[s_buff[2]+2]=CLU_check(&s_buff[2],s_buff[2]);//计算校验和
+		at_spss_send_data(gAT_ctrl_env.transparent_conidx,s_buff,s_buff[2]+3);//ble从机发送数据给主机
+		printf("the ble->phone data:");
+		show_reg2(s_buff,s_buff[2]+3,1);//以十六进制打印
+	}
+
+	return state;
+}
+//----------------------------aes加密------------------------------------
+void get_aes128_rst(void *arg)
+{   struct gapm_use_enc_block_ind *param = (struct gapm_use_enc_block_ind *)arg;
+
+	uint8_t aes_temp[16];
+	uint8_t i = 0;
+    memcpy(aes_temp,param->result,16);
+	for(i=0;i<16;i++)//把ECB加密的结果反过来，因为是小端模式
+		{
+			aes_result[i] = aes_temp[15-i];
+		}
+	printf("aes128 result: ");//打印加密结果
+	//show_reg2(param->result,KEY_LEN,1);
+	show_reg2(aes_result,KEY_LEN,1);
+
+	memcpy(&s1_buff[4],aes_result,16);
+	
+    /*for(char i=0;i<6;i++)//异或MAC地址
+        {
+            s1_buff[4+i]^=sys_config.mac_store[5-i]; // 广播的MAC地址 高字节在前;
+        }*/
+	
+    BLE_flag=1;//已提交身份认证
+
+	at_spss_send_data(gAT_ctrl_env.transparent_conidx,s1_buff,s1_buff[2]+3);//回复手机APP
+	printf("the ble->phone data:");
+	show_reg2(s1_buff,s1_buff[2]+3,1);//打印出回复给APP的ECB加密数据
+}
+
+//外设代码段
+//外设端口的初始化 
+void fr8016_io_init(void)
+{
+	//gpio.c  gpio.h   PA0:DOOR_OPEN 门状态检测,微动开关
+	//gpio_set_dir(GPIO_PORT_A, GPIO_BIT_0, 1);                //PA0设置成in 
+	//system_set_port_pull(0x00, TRUE);						 //PA0使能上拉
+	
+	//微动开关
+	//gpio_set_dir(GPIO_PORT_C, GPIO_BIT_5, GPIO_DIR_IN); 
+	system_set_port_mux(GPIO_PORT_C,GPIO_BIT_5,PORTC5_FUNC_C5);
+	gpio_set_dir(GPIO_PORT_C, GPIO_BIT_5, 1);                //PC5设置成in 
+	system_set_port_pull(0x00200000, TRUE);						 //PC5使能上拉
+
+	//exti.h  PA1:IRQ  外部中断初始化
+	/*system_set_port_mux(GPIO_PORT_A, GPIO_BIT_1, PORT_FUNC_EXT_INT);//PA1这个脚配置为中断功能
+    ext_int_set_type(0x01, EXT_INT_TYPE_NEG);                //PA1下降沿触发    
+    system_set_port_pull(0x01, TRUE);						 //PA1使能上拉
+    ext_int_set_control(0x01, 1000, 10);                     //防抖1k,计数10个
+    ext_int_enable(0x01);									 //PA01外部中断使能
+    NVIC_EnableIRQ(EXT_INTR_IRQn);							 //中断函数使能*/
+
+	//pc2:inA   pc3:inB
+	inA_init;
+	inB_init;
+	//MUSIC_INIT;
+
+	//pc2:SPEAKER_PLAY   pc3:SPEAKER_NEXT
+	//SPEAKER_PLAY_INIT;
+
+	//spi init
+	spi0_init();
+  NFC_Ms52xInit();//nfc上电初始化
+		
+	//timer0_init();  //定时器初始化
+
+	MotorRun_task_init();//任务函数和ID绑定初始化
+	nfc_task_init();     //任务函数和ID绑定初始化
+	jishi_task_init();   //计时函数和ID绑定初始化
+	jishi_timer_init();  //计时定时器初始化
+	//one_minute_timer_init();//休眠定时器初始化
+	
+	//appm_sleep_start();
+	while(gpio_portc_read()==32)
+		MotorInversion();//复位
+	MotorStop();//停止
+	os_timer_setfn(&one_minute_timer,one_minute_timer_handler,NULL);//定时器的处理回调函数
+	os_timer_setfn(&motor_run_timer,motorrun_timer_handler,NULL);//开锁定时器
+	one_minute_timer_init();//休眠定时器初始化
+	//appm_sleep_start();
+	//appm_goto_deep_sleep(10000,0);
+	//peripheral_ini_before_sleep();
+	//peripheral_ini_after_wakeup();
+}
+
+//timer0初始化
+void timer0_init(void)
+{
+    //tick0 = 0;
+    //tim0_run_num = 0;
+    timer_init(TIM0,100,TIM_PERIODIC);		//timer0,100us,forever
+
+    timer_run(TIM0);
+    NVIC_SetPriority(TIMER0_IRQn, 1);
+    NVIC_EnableIRQ(TIMER0_IRQn);			//enable timer0 interrupt
+}
+
+//外部输入中断PA1函数
+//void ext_int_isr_ram(void)
+//{
+//    uint32_t status;
+
+//    status = ext_int_get_status();
+//    ext_int_clear_status(status);
+//	printf("the exti is:%08x\r\n",status);	
+//}
+//定时器TM0中断
+void hw_tim0_isr_ram(void)
+{
+    timer_clear_interrupt(TIM0);
+    lcdd_out();
+    /*if(tick0>159)
+    {
+        tick0 = 0;
+        tim0_run_num++;
+        if(tim0_run_num >= 50)
+        {
+					//door_state = gpio_portc_read();	//获取门的状态
+			    //printf("the door_state is:%d\r\n",gpio_portc_read());	
+          tim0_run_num = 0;
+		  if(zhongduan_flag==0)
+		  	{MUSIC_HIGH;zhongduan_flag=1;}
+		  else
+		  	{MUSIC_LOW;zhongduan_flag=0;}
+		  #if 0
+			  if(opening_door_flag ==0)//此时电机没有在动作
+			  	{
+				    //SPI_RW_Reg(0x02, 0x80);
+				  	//ReadReg(0x02);
+					//ReadReg(0x01);
+					//ReadReg(0x04);
+					//printf("1 second!\r\n");
+				    //CardTypeA(SPEED_106); //检测是否有A卡
+				    //--NFC_CardProcess();
+				    os_event_t evt;
+				  	evt.event_id = read_nfc_cardid_event;
+					evt.param_len = 0;
+					evt.param = NULL;
+					evt.src_task_id = TASK_NONE;
+					os_msg_post(nfc_task_id,&evt);
+			  	}
+		  #endif
+		}
+    }
+    else
+        tick0++;*/
+}
+
+//spi初始化     pa4:clk0   pa5:csn0    pa6:dout0    pa7:din0
+void spi0_init(void)
+{
+	  pmu_set_gpio_to_CPU(GPIO_PORT_A, BIT(4)|BIT(5)|BIT(6)|BIT(7));
+	  system_set_port_mux(GPIO_PORT_A, GPIO_BIT_4, PORTA4_FUNC_SSP1_CLK);  //io redefine
+    system_set_port_mux(GPIO_PORT_A, GPIO_BIT_5, PORTA5_FUNC_SSP1_CSN);  //io redefine
+    system_set_port_mux(GPIO_PORT_A, GPIO_BIT_6, PORTA6_FUNC_SSP1_DOUT); //io redefine
+    system_set_port_mux(GPIO_PORT_A, GPIO_BIT_7, PORTA7_FUNC_SSP1_DIN);  //io redefine
+    ssp_init_x(ssp1,1000000,2,8,0); //mode 0:master;  1:slave
+}
+
+/**************************************************
+功能：写RF寄存器，读RF状态值(可用)
+**************************************************/
+void WriteReg(uint8_t Address,uint8_t Data)
+{
+	Address = (Address<<1);
+	ssp_clear_rx_fifo_x(ssp1);
+	ssp_put_byte_x(ssp1,Address); //写一个数据   
+	ssp_put_byte_x(ssp1,Data); //写一个数据
+    ssp_enable_x(ssp1);
+    
+    ssp_wait_busy_bit_x(ssp1);
+    ssp_disable_x(ssp1);
+}
+/**************************************************
+功能：读RF寄存器(可用)
+**************************************************/
+uint8_t ReadReg(uint8_t Address)
+{
+	uint8_t temp,reg_val;
+	Address = (Address<<1) | 0x80;
+  	ssp_clear_rx_fifo_x(ssp1);
+	ssp_put_byte_x(ssp1,Address); //写一个数据   
+	ssp_put_byte_x(ssp1,0xFF); //写一个数据
+	ssp_enable_x(ssp1);
+    
+	ssp_get_data_x(ssp1,&temp, 1);//读
+	ssp_get_data_x(ssp1,&reg_val, 1);//读
+	ssp_wait_busy_bit_x(ssp1);
+    ssp_disable_x(ssp1);
+
+	//printf("SPI_Read:%02x\r\n",reg_val);
+  	return(reg_val);        								// 返回RF状态值
+}
+uint8_t NFC_TOOL_Strncpy(uint8_t *ptrDst, uint8_t *ptrSrc, uint8_t uLen)
+	{
+	uint8_t i = 0;
+	if(ptrDst==NULL || ptrSrc==NULL)
+		{
+   // return S_FAIL;
+		}
+
+	for(i=0; i<uLen; i++)
+		{
+		*(ptrDst+i) = *(ptrSrc+i);
+		}
+	return S_OK;
+	}
+//A卡扫描  msp430
+uint8_t CardTypeA(uint8_t speed)
+{
+	WriteReg(0x18,0x85);//选择位解码器阀值{定义解码器输入的最小信号阀值}
+    WriteReg(0x19,0x4D);//定义解调器的设置
+  
+    WriteReg(0x26,0x79);//配置接收器增益 48dbm
+
+	WriteReg(0x28,0x3F);//定义p驱动器输出端非调制时的电导
+    WriteReg(0x29,0x03);//定义p驱动器输出端调制时的电导
+
+	WriteReg(0x12,speed);//定义发送过程的数据速率 106kBd
+    WriteReg(0x13,speed);//定义接收过程的数据速率
+    WriteReg(0x14,0x83);//控制天线驱动器管脚tx1和tx2的逻辑状态，打开两个管脚持续输出为调制的13.56Mhz能量载波
+    WriteReg(0x15,0x40);//Type A  控制发送调制的设置{强制进行100%ASK的调制_A卡}
+	printf("SPI_Read:%02x,%02x,%02x,%02x,%02x\r\n",ReadReg(0x18),ReadReg(0x19),ReadReg(0x26),ReadReg(0x28),ReadReg(0x29));
+	printf("SPI_Read:%02x,%02x,%02x,%02x\r\n",ReadReg(0x12),ReadReg(0x13),ReadReg(0x14),ReadReg(0x15));
+	if(!CardTypeARequest())//SUCCESS  1     FAIL 0
+    {
+    	WriteReg(0x14,0x80);//?关闭两个管脚持续输出为调制的13.56Mhz能量载波
+    	printf("read typeA error!\r\n");
+    	return FAIL;
+    }
+	for(int i=0;i<5;i++)
+    {
+    	CardIDTypeA[i] = 0;//10字节数组
+    }
+	
+	WriteReg(0x0a,0x80);          //清除fifo缓冲区已存储字节数
+ 
+    WriteReg(0x09,0x93);          //wirte command(待发)
+    WriteReg(0x09,0x20);          //(待发)
+
+    WriteReg(0x01,0x0C);          //trans and receive  发送后自动激活接收器
+    WriteReg(0x0D,0x80);          //start send //面向位的帧的调节，启动发送，lsb放在0位，发送的最后一字节位数{8位}
+    delay(1000);
+    WriteReg(0x0e,0x20);			//定义rf接口上检测到的第一个位冲突
+    CollFlag  = ReadReg(0x0e);    //?
+
+	SpiRxData = ReadReg(0x0a); //读取收到的字节数
+    for(int i=0;i<SpiRxData;i++)
+    {
+	    CardIDTypeA[i] = ReadReg(0x09);
+		if(i<4) printf("card id:%02x",CardIDTypeA[i]);
+    }
+    WriteReg(0x14,0x80);  //控制天线驱动器管脚tx1和tx2的逻辑状态
+    return SUCCESS;
+}
+//s50卡类型判断  msp430
+uint8_t CardTypeARequest(void)         
+{
+	for(int i=0;i<2;i++)
+    TagType[i] = 0;
+    WriteReg(0x12,0x00);          //TX CRC  //定义发送过程的数据速率
+    WriteReg(0x13,0x00);          //RX CRC  //定义接收过程的数据速率
+
+	WriteReg(0x0a,0x80);		  //fifo缓冲区已存储字节数 (读写指针复位)
+    WriteReg(0x0D,0x07);		  //面向位的帧的调节         
+
+    WriteReg(0x09,0x52);          //wirte data 64字节fifo缓冲区输入和输出(待发出0x26)
+    printf("SPI_Read:%02x,%02x,%02x,%02x,%02x\r\n",ReadReg(0x12),ReadReg(0x13),ReadReg(0x0a),ReadReg(0x0d),ReadReg(0x09));  
+  	SpiRxData = ReadReg(0x0a);	  //fifo缓冲区已存储字节数
+  	SpiRxData = ReadReg(0x01);	  //启动和停止指令
+  	WriteReg(0x01,0x0C);          //trans and receive  发送后自动激活接收器命令
+  	WriteReg(0x0D,0x87);          //start send   //面向位的帧的调节，启动发送，lsb放在0位，发送的最后一字节位数{7位}
+  	printf("SPI_Read:%02x,%02x,%02x\r\n",ReadReg(0x0a),ReadReg(0x01),ReadReg(0x0d));
+
+	delay(1000);
+	
+ 	SpiRxData = ReadReg(0x0a);   //读到几个字节
+ 	printf("how many byte for type:%02x\r\n",SpiRxData);
+  	for(int i=0;i<SpiRxData;i++)
+	{
+		TagType[i] = ReadReg(0x09);//两字节字符数组
+		printf("typeA:%02x\r\n",TagType[i]);
+	}
+    	
+  
+  	if((TagType[0] == 0x04) && (TagType[1] == 0x00))
+  	{   
+    	CardType = _S50;   
+		printf("s50!!!");
+    	return SUCCESS;
+    }
+	else if((TagType[0] == 0x02) && (TagType[1] == 0x00))
+    {
+	    CardType = _S70;
+	    
+	    return SUCCESS;
+    }
+    else if((TagType[0] == 0x44) && (TagType[1] == 0x03))
+    {
+	    CardType = _DESFIRE;
+	    return SUCCESS;
+    }
+    else
+    	return FAIL;
+}
+//延时
+void delay(uint16_t x)
+{
+  for(int i=0;i<=x;i++);
+}
+
+//上电初始化
+void NFC_Ms52xInit(void)
+	{
+	PcdReset();
+	printf("PcdReset init:\r\n");
+	PcdAntennaOff();  
+	printf("PPcdAntennaOff init:\r\n");
+	//PcdAntennaOn();
+	//printf("PcdAntennaOn init:\r\n");
+	//M500PcdConfigISOType( 'A' );
+	//printf("M500PcdConfigISOType init:\r\n");
+	NFC_CloseAntena();
+	}
+
+//PcdReset
+uint8_t PcdReset(void)
+	{
+		WriteReg(CommandReg,PCD_RESETPHASE);
+		//delay_ns(10);
+	    
+		WriteReg(ModeReg,0x3D);           	 	// 和Mifare卡通讯，CRC初始值0x6363
+		WriteReg(TReloadRegL,30);           
+		WriteReg(TReloadRegH,0);
+		WriteReg(TModeReg,0x8D);
+		WriteReg(TPrescalerReg,0x3E);
+		
+		WriteReg(TxAutoReg,0x40);		// 必须要
+		return MI_OK;
+	}
+
+//ns delay
+void delay_ns(int ns)
+	{
+		uint16_t i;
+		for(i=0;i<ns;i++);
+	}
+
+//关闭天线
+void PcdAntennaOff(void)
+	{
+		NFC_ClearBitMask(TxControlReg, 0x03);
+	}
+
+//clean bit
+void NFC_ClearBitMask(uint8_t reg, uint8_t mask)  
+	{
+		uint8_t tmp = 0x00;
+		tmp = ReadReg(reg);
+		WriteReg(reg, tmp & ~mask);  	// clear bit mask
+	}
+
+// 功    能：置MS52X寄存器位
+// 参数说明：reg[IN]:寄存器地址
+//           mask[IN]:置位值
+void NFC_SetBitMask(uint8_t reg, uint8_t mask)  
+	{
+		uint8_t tmp = 0x00;
+		tmp = ReadReg(reg);
+		WriteReg(reg,tmp | mask);  			// set bit mask
+		}
+
+// 每次启动或关闭天险发射之间应至少有1ms的间隔
+void PcdAntennaOn(void)
+	{
+	uint8_t i;
+	i = ReadReg(TxControlReg);
+	if (!(i & 0x03))
+		{
+        	NFC_SetBitMask(TxControlReg, 0x03);
+		}
+	}
+
+//设置RC632的工作方式 
+int8_t M500PcdConfigISOType(uint8_t type)
+	{
+	if (type == 'A')                     // ISO14443_A
+		{ 
+			NFC_ClearBitMask(Status2Reg,0x08);  //关闭加密
+			WriteReg(ModeReg,0x3D);// 3F  定义发送和接收通用模式的设置
+			WriteReg(RxSelReg,0x86);// 84  选择模拟模块的内部信号源
+			WriteReg(RFCfgReg,0x7F);   // 4F 接收增益
+			WriteReg(TReloadRegL,0x30);//  //tmoLength);// TReloadVal = 'h6a =tmoLength(dec) 0xFF
+			WriteReg(TReloadRegH,0);   //定时器高位
+			WriteReg(TModeReg,0x8D);   //定义定时器设置
+			WriteReg(TPrescalerReg,0x3E);//定义定时器设置
+			//delay_ns(1000);
+			PcdAntennaOn();//打开天线
+		}
+	else
+		{
+		   return -1;
+		}
+   
+  	return MI_OK;
+	}
+
+// 功 能：寻卡
+// 参数说明: req_code[IN]:寻卡方式
+// 0x52 = 寻感应区内所有符合14443A标准的卡
+// 0x26 = 寻未进入休眠状态的卡
+// pTagType[OUT]：卡片类型代码
+// 0x4400 = Mifare_UltraLight
+// 0x0400 = Mifare_One(S50)
+// 0x0200 = Mifare_One(S70)
+// 0x0800 = Mifare_Pro(X)
+// 0x4403 = Mifare_DESFire
+// 返 回: 成功返回MI_OK
+char PcdRequest(uint8_t req_code,uint8_t *pTagType)
+	{
+	char status;  
+	uint8_t unLen;
+	uint8_t ucComMF522Buf[MAXRLEN]; //maxrlen is 18
+
+	NFC_ClearBitMask(Status2Reg,0x08);
+	WriteReg(BitFramingReg,0x07);
+	NFC_SetBitMask(TxControlReg,0x03);//控制天线驱动器管脚tx1和tx2的逻辑状态，打开两个管脚持续输出为调制的13.56Mhz能量载波
+	//delay_ns(2000);     // 加延时可以读cpu卡
+	ucComMF522Buf[0] = req_code;
+
+	status = PcdComMF522(PCD_TRANSCEIVE,ucComMF522Buf,1,ucComMF522Buf,&unLen);// 发送并接收数据
+
+	if((status == MI_OK) && (unLen == 0x10)) 	//返回 0x04 00  S50卡
+		{    
+			*pTagType = ucComMF522Buf[0];        TagType[0]=ucComMF522Buf[0];
+			*(pTagType+1) = ucComMF522Buf[1];    TagType[1]=ucComMF522Buf[1];
+			//printf("PcdRequest for typeA:%02x,%02x\r\n",ucComMF522Buf[0],ucComMF522Buf[1]);
+	
+		}
+	else
+		{   
+		status = MI_ERR;   
+		}   
+	return status;
+	}
+
+// 功能：通过RC522和ISO14443卡通讯
+// 参数说明：Command[IN]:RC522命令字
+// pInData[IN]:通过RC522发送到卡片的数据
+// InLenByte[IN]:发送数据的字节长度
+// pOutData[OUT]:接收到的卡片返回数据
+// *pOutLenBit[OUT]:返回数据的位长度
+char PcdComMF522(uint8_t Command, uint8_t *pInData, uint8_t InLenByte, uint8_t *pOutData, uint8_t *pOutLenBit)
+	{
+	uint8_t status = MI_FAIL;
+	uint8_t irqEn   = 0x00;
+	uint8_t waitFor = 0x00;
+	uint8_t lastBits;
+	uint8_t n;
+	uint8_t i;
+	switch (Command)
+		{
+	 	case PCD_AUTHENT:
+			irqEn   = 0x12;
+			waitFor = 0x10;
+			break;
+		case PCD_TRANSCEIVE:// 发送并接收数据
+			irqEn   = 0x77;
+			waitFor = 0x30;
+			break;
+		default:
+			break;
+		}
+	 
+	WriteReg(ComIEnReg,irqEn|0x80);//使能和禁用中断控制标志
+	NFC_ClearBitMask(ComIrqReg,0x80);
+	WriteReg(CommandReg,PCD_IDLE);//空闲状态
+	NFC_SetBitMask(FIFOLevelReg,0x80);//清读写指针
+	  
+	for (i=0; i<InLenByte; i++)
+		{   
+			WriteReg(FIFODataReg, pInData[i]);    
+		}
+	WriteReg(CommandReg, Command);
+	if (Command == PCD_TRANSCEIVE)
+		{    
+		NFC_SetBitMask(BitFramingReg, 0x80);  
+		}
+
+	// i = 60000;//根据时钟频率调整，操作M1卡最大等待时间25ms
+	i = 200;//溢出记得调试修改
+	do 
+		{
+			n = ReadReg(ComIrqReg);
+			i--;
+		}
+	while ((i!=0) && !(n&0x01) && !(n&waitFor));
+	NFC_ClearBitMask(BitFramingReg,0x80);
+
+	if(i!=0)
+		{    
+		status = ReadReg(ErrorReg);
+		if(!(status&0x1B))
+			{
+			status = MI_OK;
+			if (n & irqEn & 0x01)
+				{   
+				status = MI_NOTAGERR;   
+				}
+			if(Command == PCD_TRANSCEIVE)
+				{
+				n = ReadReg(FIFOLevelReg);
+				lastBits = ReadReg(ControlReg) & 0x07;
+				if (lastBits)
+					{   
+				       *pOutLenBit = (n-1)*8 + lastBits;   
+					}
+				else
+					{   
+					*pOutLenBit = n*8;   
+					}
+				if(n == 0)
+					{   
+				       n = 1;    
+					}
+				if (n > MAXRLEN)
+					{   
+					n = MAXRLEN;   
+					}
+				for (i=0; i<n; i++)
+					{   
+				       pOutData[i] = ReadReg(FIFODataReg);
+			        }
+				}
+			}
+		else
+			{   
+			status = MI_FAIL;   
+			}	    
+		}
+   
+	NFC_SetBitMask(ControlReg,0x80);           // stop timer now
+	WriteReg(CommandReg,PCD_IDLE); 
+	return status;
+	}
+
+//获取序列号 4字节32位
+uint8_t NFC_GetCardSn(uint8_t *ptrCardSn, uint8_t* ptrCardSnLen)
+	{
+	uint8_t retState = S_FAIL;
+	uint8_t uTagType[2];
+	PcdReset();
+
+	M500PcdConfigISOType( 'A' );
+	// 询卡(得知卡类型)
+	retState = PcdRequest(PICC_REQALL,uTagType);// 寻天线区内全部卡
+ 	if (MI_OK != retState)
+		{
+			//printf("PcdRequest fair (retState):%02x\r\n",retState);
+			NFC_CloseAntena();
+			return STATUS_GET_UID_ERR;
+		}
+
+  	// 防冲突(得知4字节全球唯一ID)
+	retState = PcdAnticoll(ptrCardSn, ptrCardSnLen);
+	if (MI_OK != retState)
+		{
+			//printf("PcdAnticoll fair (retState):%02x\r\n",retState);
+			NFC_CloseAntena();
+			return STATUS_GET_UID_ERR;
+		}
+	// 选卡(选定具体一张卡片)
+	retState = PcdSelect(ptrCardSn);
+	if (MI_OK != retState)
+		{
+			//printf("PcdSelect fair (retState):%02x\r\n",retState);
+			NFC_CloseAntena();
+    		return STATUS_GET_UID_ERR;
+		}
+   
+	return retState;
+	}
+
+
+// 功    能：防冲撞
+// 参数说明: pSnr[OUT]:卡片序列号，4字节
+// 返    回: 成功返回MI_OK
+char PcdAnticoll(uint8_t *pCardSn, uint8_t *pCardSnLen)
+	{
+	char status = MI_FAIL;
+	uint8_t i,snr_check=0;
+	uint8_t ucComMF522Buf[MAXRLEN]; 
+
+	NFC_ClearBitMask(Status2Reg,0x08);
+	WriteReg(BitFramingReg,0x00);
+	NFC_ClearBitMask(CollReg,0x80);
+
+	ucComMF522Buf[0] = PICC_ANTICOLL1;
+	ucComMF522Buf[1] = 0x20;
+	s50_id[0]=0;s50_id[1]=0;s50_id[2]=0;s50_id[3]=0;
+	status = PcdComMF522(PCD_TRANSCEIVE,ucComMF522Buf,2,ucComMF522Buf,pCardSnLen);
+
+	if (status == MI_OK)
+		{
+		*pCardSnLen >>= 3;
+		for (i=0; i<(*pCardSnLen); i++)
+			{   
+			*(pCardSn+i)  = ucComMF522Buf[i];
+			snr_check ^= ucComMF522Buf[i];
+			}
+		*(pCardSn+i) = '\0';
+		if (snr_check != 0x00)
+			{   
+			status = MI_ERR;    
+			*(pCardSn) = '\0';
+			*pCardSnLen = 0;
+			//printf("snr_check error:%02x",snr_check);
+			}
+		else
+			{
+				//printf("The s50 card id is:%02x,%02x,%02x,%02x\r\n",ucComMF522Buf[0],ucComMF522Buf[1],ucComMF522Buf[2],ucComMF522Buf[3]);
+				s50_id[0]=ucComMF522Buf[0];s50_id[1]=ucComMF522Buf[1];
+				s50_id[2]=ucComMF522Buf[2];s50_id[3]=ucComMF522Buf[3];
+				nfc_successful_indicator_timer_init();//nfc刷卡成功指示器定时器初始化
+			}
+		}
+	NFC_SetBitMask(CollReg,0x80);
+	return status;
+	}
+
+// 功    能：选定卡片
+// 参数说明: pSnr[IN]:卡片序列号，4字节
+// 返    回: 成功返回MI_OK
+char PcdSelect(uint8_t *pSnr)
+	{
+	char status;
+	uint8_t i;
+	uint8_t unLen;
+	uint8_t ucComMF522Buf[MAXRLEN]; 
+    
+	ucComMF522Buf[0] = PICC_ANTICOLL1;
+	ucComMF522Buf[1] = 0x70;
+	ucComMF522Buf[6] = 0;
+	for (i=0; i<4; i++)
+		{
+		ucComMF522Buf[i+2] = *(pSnr+i);
+		ucComMF522Buf[6]  ^= *(pSnr+i);
+		}
+	CalulateCRC(ucComMF522Buf,7,&ucComMF522Buf[7]);  
+	NFC_ClearBitMask(Status2Reg,0x08);
+	status = PcdComMF522(PCD_TRANSCEIVE,ucComMF522Buf,9,ucComMF522Buf,&unLen);
+    
+	if((status == MI_OK) && (unLen == 0x18))  	// S50 返回 0x08 0xB6 0xdd 0x40 0x92 2d bc a8 c3 00 00 01 00 5b 01 00 1f ff
+		{   
+		status = MI_OK;  
+		}
+	else
+		{   
+		status = MI_ERR;    
+		}
+
+	return status;
+	}
+
+// 用MF522计算CRC16函数
+void CalulateCRC(uint8_t *pIndata,uint8_t len,uint8_t *pOutData)
+	{
+		uint8_t i,n;
+		NFC_ClearBitMask(DivIrqReg,0x04);
+		WriteReg(CommandReg,PCD_IDLE);
+		NFC_SetBitMask(FIFOLevelReg,0x80);
+		for (i=0; i<len; i++)
+			{
+				WriteReg(FIFODataReg, *(pIndata+i));
+			}
+		WriteReg(CommandReg, PCD_CALCCRC);
+		i = 0xFF;
+		do 
+			{
+			n = ReadReg(DivIrqReg);
+			i--;
+			}
+		while ((i!=0) && !(n&0x04));
+		pOutData[0] = ReadReg(CRCResultRegL);
+		pOutData[1] = ReadReg(CRCResultRegM);
+	}
+// 功    能：验证卡片密码
+// 参数说明: auth_mode[IN]: 密码验证模式
+// 0x60 = 验证A密钥
+// 0x61 = 验证B密钥 
+// addr[IN]：块地址
+// pKey[IN]：密码
+// pSnr[IN]：卡片序列号，4字节
+// 返    回: 成功返回MI_OK
+uint8_t PcdAuthState(uint8_t auth_mode,uint8_t addr,uint8_t *pKey,uint8_t *pSnr)
+	{
+	uint8_t status;
+	uint8_t unLen,i;
+	uint8_t ucComMF522Buf[MAXRLEN]; 
+	ucComMF522Buf[0] = auth_mode;
+	ucComMF522Buf[1] = addr;
+	for (i=0; i<6; i++)
+		{
+		ucComMF522Buf[i+2] = *(pKey+i);
+		}
+	for (i=0; i<4; i++)
+		{
+		ucComMF522Buf[i+8] = *(pSnr+i);
+		}
+	status = PcdComMF522(PCD_AUTHENT,ucComMF522Buf,12,ucComMF522Buf,&unLen);
+	if((status != MI_OK) || (!(ReadReg(Status2Reg) & 0x08))) //s50 60 01 ff ff ff 
+		{   
+		status = MI_ERR;   
+		}
+    
+	return status;
+	}
+// 功    能：写数据到M1卡一块
+// 参数说明: addr[IN]：块地址
+//          pData[IN]：写入的数据，16字节
+// 返    回: 成功返回MI_OK
+int8_t PcdWrite(uint8_t addr,uint8_t *pData)
+	{
+    	int8_t status;
+	uint8_t unLen;
+	uint8_t ucComMF522Buf[MAXRLEN]; 
+    
+	ucComMF522Buf[0] = PICC_WRITE;
+	ucComMF522Buf[1] = addr;
+	CalulateCRC(ucComMF522Buf,2,&ucComMF522Buf[2]);
+ 
+	status = PcdComMF522(PCD_TRANSCEIVE,ucComMF522Buf,4,ucComMF522Buf,&unLen);
+
+	if((status != MI_OK) || (unLen != 4) || ((ucComMF522Buf[0] & 0x0F) != 0x0A))		// 返回四字节0x0a 0x01 0xd6 0xa0
+		{   
+		status = MI_ERR;   
+		}
+        
+	if(status == MI_OK)
+		{
+		NFC_TOOL_Strncpy(ucComMF522Buf, pData, 16);
+		CalulateCRC(ucComMF522Buf,16,&ucComMF522Buf[16]);
+		status = PcdComMF522(PCD_TRANSCEIVE,ucComMF522Buf,18,ucComMF522Buf,&unLen);
+		if((status != MI_OK) || (unLen != 4) || ((ucComMF522Buf[0] & 0x0F) != 0x0A))
+			{   
+			status = MI_ERR;   
+			}
+		}    
+	return status;
+	}
+// 功    能：命令卡片进入休眠状态
+// 返    回: 成功返回MI_OK
+char PcdHalt(void)
+	{
+	uint8_t status;
+	uint8_t unLen;
+	uint8_t ucComMF522Buf[MAXRLEN]; 
+
+	ucComMF522Buf[0] = PICC_HALT;
+	ucComMF522Buf[1] = 0;
+	CalulateCRC(ucComMF522Buf,2,&ucComMF522Buf[2]);
+ 
+	status = PcdComMF522(PCD_TRANSCEIVE,ucComMF522Buf,4,ucComMF522Buf,&unLen);
+	if(status == MI_FAIL)
+		{
+		status = MI_FAIL;
+		}
+	return status;
+	}
+void NFC_CloseAntena(void)
+	{
+	PcdHalt(); 
+	WriteReg(CommandReg,0x20);
+	PcdAntennaOff();
+	NFC_OFF;
+	}
+
+// 功    能：读取M1卡一块数据
+// 参数说明: addr[IN]：块地址
+// pData[OUT]：读出的数据，16字节
+// 返    回: 成功返回MI_OK
+int8_t PcdRead(uint8_t addr,uint8_t *pData)
+	{
+	int8_t status;
+	uint8_t unLen;
+	uint8_t ucComMF522Buf[MAXRLEN]; 
+
+	ucComMF522Buf[0] = PICC_READ;
+	ucComMF522Buf[1] = addr;
+	CalulateCRC(ucComMF522Buf,2,&ucComMF522Buf[2]);
+   
+	status = PcdComMF522(PCD_TRANSCEIVE,ucComMF522Buf,4,ucComMF522Buf,&unLen);
+	if((status == MI_OK) && (unLen == 0x90))
+		{   
+		NFC_TOOL_Strncpy(pData, ucComMF522Buf, 16);
+		//printf("nfc read:%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x\r\n",
+			    //pData[0],pData[1],pData[2],pData[3],pData[4],pData[5],pData[6],pData[7],pData[8],
+			    //pData[9],pData[10],pData[11],pData[12],pData[13],pData[14],pData[15]);
+		}
+	else
+		{   
+		status = MI_ERR;   
+		}
+    
+	return status;
+	}
+
+// 读卡处理
+void NFC_CardProcess(void)			
+{// 50ms
+	NFC_ON;
+	delay_ns(200);
+	uint8_t retStatus = S_FAIL;
+	uint8_t uUidBuf[5];
+	uint8_t uUidLen;
+	uint8_t key[6]={0xff,0xff,0xff,0xff,0xff,0xff};//默认密码
+	//uint8_t uData[16] ={0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f};
+	//uint8_t uReadData[16];
+	//uint8_t temp;
+	//static uint8_t Times;
+	
+	// 激活卡片以及获取uid
+	retStatus = NFC_GetCardSn(uUidBuf, &uUidLen);
+	if(retStatus != MI_OK)
+		{
+		//StateLEDFlag = CLR_Flag;
+			//printf("read id fair retstatus=0x%02x\r\n",retStatus);
+			NFC_CloseAntena();
+			return;
+		}
+	
+	// 验证访问权限
+	retStatus =  PcdAuthState(PICC_AUTHENT1A,0x01,key,uUidBuf);
+	if(S_OK != retStatus)
+		{
+			printf("permission0 fair retstatus=0x%02x\r\n",retStatus);
+			NFC_CloseAntena();
+		  return;
+		}
+	// 写数据
+	/*retStatus=PcdWrite(0x01,uData); 
+	if(S_OK != retStatus)
+		{
+			printf("write data fair retstatus=0x%02x\r\n",retStatus);
+			NFC_CloseAntena();
+		  return;
+		}*/
+	// 读扇区信息,万能卡信息
+	retStatus=PcdRead(0x01,section0_block1);
+	if(S_OK != retStatus)
+		{
+			printf("read_0_1 data fair retstatus=0x%02x\r\n",retStatus);
+			memset(section0_block1,0,16);//清空数组
+			memset(section1_block0,0,16);//清空数组
+			memset(section1_block1,0,16);//清空数组
+			memset(section1_block2,0,16);//清空数组
+			NFC_CloseAntena();
+		  return;
+		}
+	retStatus =  PcdAuthState(PICC_AUTHENT1A,0x04,key,uUidBuf);
+	if(S_OK != retStatus)
+		{
+			printf("permission1 fair retstatus=0x%02x\r\n",retStatus);
+			NFC_CloseAntena();
+		  return;
+		}
+	// 读扇区信息
+	retStatus=PcdRead(0x04,section1_block0);
+	if(S_OK != retStatus)
+		{
+			printf("read_1_0 data fair retstatus=0x%02x\r\n",retStatus);
+			memset(section1_block0,0,16);//清空数组
+			memset(section1_block1,0,16);//清空数组
+			memset(section1_block2,0,16);//清空数组
+			NFC_CloseAntena();
+		  return;
+		}	
+	retStatus=PcdRead(0x05,section1_block1);
+	if(S_OK != retStatus)
+		{
+			printf("read_1_1 data fair retstatus=0x%02x\r\n",retStatus);
+			memset(section1_block0,0,16);//清空数组
+			memset(section1_block1,0,16);//清空数组
+			memset(section1_block2,0,16);//清空数组
+			NFC_CloseAntena();
+		  return;
+		}
+	retStatus=PcdRead(0x06,section1_block2);
+	if(S_OK != retStatus)
+		{
+			printf("read_1_2 data fair retstatus=0x%02x\r\n",retStatus);
+			NFC_CloseAntena();
+			memset(section1_block0,0,16);//清空数组
+			memset(section1_block1,0,16);//清空数组
+			memset(section1_block2,0,16);//清空数组
+		  return;
+		}	
+	NFC_CloseAntena();
+	/*Times ++;
+	if(Times <= 1)
+		{
+		for(temp = 0;temp < CardUId_LENGTH;temp ++)			
+			gM1CardUID_Data[temp] = uUidBuf[temp];
+		}
+	else
+		{
+		Times = 10;
+		return;
+		}
+	
+	BuzzerOn(OK);
+	StateLEDFlag = SET_Flag;
+	CardReadDataOKFlag = SET_Flag;
+	MotorRunFlag = SET_Flag;
+	MotorRunForwardFlag = CLR_Flag;*/
+}
+//任务函数和ID绑定初始化
+void nfc_task_init(void)            
+{
+	if ( os_task_create( nfc_task_func,&nfc_task_id ) != KE_TASK_OK )
+	     {
+	        printf("nfc_task create fail\r\n");
+	        //goto _exit;
+	     }
+}
+
+//nfc刷卡运行总调度*******************************************************************************************
+int nfc_task_func(os_event_t *msg)  
+{
+	//uint8_t door_state = 0;
+	//uint8_t s_buff[10]={0x55,0xAA,0x03,0x00,0x00,0xff,0xff,0xff,0xff,0xff};
+	uint16_t changguan_nfc=0,changguan_ble=0,guihao_nfc=0,guihao_ble=0,shenfen_nfc=0;
+	uint8_t guihao_index=0,guihao_index2=0;
+	uint8_t all_check_ok=0;
+	uint16_t time_limit_nfc=0;
+	uint8_t random_nfc[4]={0};
+	uint8_t i=0,j=0,card_same=0,random_same=0;
+	uint8_t open_door_flag_temp=0;
+	
+	switch(msg->event_id) //识别事件ID*************************************************************************
+	{
+		case read_nfc_cardid_event://读取到卡信息********************************************************************
+		{
+			if(opening_door_flag ==1) return (KE_MSG_CONSUMED);
+			motor_run_error_timer_stop();//停止电机运行出错定时器
+			NFC_CardProcess();//读出卡号
+			//read_card_id();//读出保存的卡号
+			
+			//卡类型正确*********************************************************************************************
+			if( (TagType[0]==0x04) && (TagType[1]==0x00) )  
+			{
+					read_card_id();//读出保存的卡号
+					if( memcmp(section0_block1,section0_block1_key,16) == 0 ) //万能密钥*******************************
+					{
+							//抛出开锁消息
+							opening_door_flag =1;
+							os_event_t evt;
+							evt.event_id = motor_run_event;
+							evt.param_len = 0;
+							evt.param = NULL;
+							evt.src_task_id = TASK_NONE;
+							os_msg_post(ble_motor_task_id,&evt);
+							motor_run_error_timer_init();//电机运行出错定时器初始化
+								
+							memset(s50_id,0,4);	TagType[0]=0x00;TagType[1]=0x00;
+							memset(section0_block1,0,16);//清空数组
+							write_phone_flash();				
+					}
+					else//非万能卡*************************************************************************************
+					{
+							for(guihao_index=4;guihao_index<16;guihao_index++)//NFC柜号解析
+							{
+								if(section1_block0[guihao_index]==0x00)
+								{break;}
+							}
+							for(guihao_index2=4;guihao_index2<guihao_index;guihao_index2++)//NFC柜号解析
+							{
+								guihao_nfc = guihao_nfc*10+(section1_block0[guihao_index2]-0x30);
+							}
+							changguan_nfc=section1_block0[0]+section1_block0[1]*256;//NFC场馆号
+							shenfen_nfc=section1_block1[0];//NFC身份
+							time_limit_nfc =section1_block1[10]*256+section1_block1[9];
+							memcpy(random_nfc,&section1_block1[11],4);//获取随机号
+							memcpy(set_ht_secret,&section1_block2[7],4);//获取手机号码
+							
+							guihao_ble=sys_config.identity1[1]*256+sys_config.identity1[2];//ble柜号
+							changguan_ble=sys_config.identity1[0];//ble场馆号
+							//printf("changguan_nfc=%d guihao_nfc=%d shenfen_nfc=%d\r\n",changguan_nfc,guihao_nfc,shenfen_nfc);
+							//printf("changguan_ble=%d guihao_ble=%d\r\n",changguan_ble,guihao_ble);
+							TagType[0]=0x00;TagType[1]=0x00;
+							
+							//场馆号柜号***************************************************************************************
+							if( (changguan_ble==changguan_nfc) && (guihao_ble==guihao_nfc) )
+							{
+								switch(shenfen_nfc)
+								{
+									case 1:
+										if( memcmp(&sys_config.identity1[4],&section1_block1[1],8) == 0 ) 
+											all_check_ok = 1;
+										else
+											all_check_ok = 0;
+										//printf("shenfen1 read:%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x\r\n",
+										//sys_config.identity1[4],sys_config.identity1[5],sys_config.identity1[6],sys_config.identity1[7],
+										//sys_config.identity1[8],sys_config.identity1[9],sys_config.identity1[10],sys_config.identity1[11]);
+									break;
+									case 2:
+										if( memcmp(&sys_config.identity2[4],&section1_block1[1],8) == 0 ) 
+											all_check_ok = 1;
+										else
+											all_check_ok = 0;
+									break;
+									case 3:
+										if( memcmp(&sys_config.identity3[4],&section1_block1[1],8) == 0 ) 
+											all_check_ok = 1;
+										else
+											all_check_ok = 0;
+									break;
+									case 4:
+										if( memcmp(&sys_config.identity4[4],&section1_block1[1],8) == 0 ) 
+											all_check_ok = 1;
+										else
+											all_check_ok = 0;
+									break;
+									case 5:
+										if( memcmp(&sys_config.identity5[4],&section1_block1[1],8) == 0 ) 
+											all_check_ok = 1;
+										else
+											all_check_ok = 0;
+									break;
+									default: all_check_ok = 0;
+									break;
+								}
+								if(1==all_check_ok)//身份 密钥一致**********************************************************
+								{	
+									for(i=0;i<jilu_count;i++)
+									{
+										if(memcmp(s50_id,jilu_data.jilu[i].cardid,4) == 0)
+										{
+											card_same=1;j=i;break;
+										}
+									}
+									for(i=0;i<jilu_count;i++)//一般卡不同，流水号是不会重复
+									{
+										if(memcmp(random_nfc,jilu_data.jilu[i].random,4) == 0)
+										{
+											random_same=1;break;
+										}
+									}
+									if((1==random_same)&&(1==card_same))//同卡同一流水号//***************************************
+									{
+										if(jilu_data.jilu[j].time<=0) //时间到
+										{
+											jilu_data.jilu[j].time=0;jilu_data.jilu[j].time_is_ok_flag=0;//时间到禁止开锁	
+											
+										}
+										else
+										{
+											jilu_data.jilu[j].time_is_ok_flag=1;//时间没到允许开锁//
+										}
+										open_door_flag_temp = jilu_data.jilu[j].time_is_ok_flag;
+										printf("card_id same:random same:index=%d,open=%d,time=%d\r\n",jilu_data.index,open_door_flag_temp,jilu_data.jilu[j].time);
+									}
+									//同卡不同一流水号,确认还卡了*******************************************************************
+									if((0==random_same)&&(1==card_same))
+									{
+										jilu_data.jilu[j].time=time_limit_nfc;//时间取代原卡的记录
+										memcpy(jilu_data.jilu[j].cardid,s50_id,4);//存s50 id
+										memcpy(jilu_data.jilu[j].phone,set_ht_secret,4);//存手机号码
+										memcpy(jilu_data.jilu[j].random,random_nfc,4);//存手机号码
+										jilu_data.jilu[j].time_is_ok_flag=1;//允许开锁
+										open_door_flag_temp = jilu_data.jilu[j].time_is_ok_flag;
+										printf("card_id same:random not same:index=%d,open=%d,time=%d\r\n",jilu_data.index,open_door_flag_temp,jilu_data.jilu[j].time);
+									}
+									//不同卡不同一流水号//************************************************************************
+									if((0==random_same)&&(0==card_same))
+									{
+										if( (jilu_data.index<jilu_count) ) 
+										{
+											jilu_data.index = jilu_data.index+1;
+										}
+											else  jilu_data.index=0;
+										
+										jilu_data.jilu[jilu_data.index].time=time_limit_nfc;//时间取代原卡的时间记录
+										memcpy(jilu_data.jilu[jilu_data.index].cardid,s50_id,4);//存s50 id
+										memcpy(jilu_data.jilu[jilu_data.index].phone,set_ht_secret,4);//存手机号码
+										memcpy(jilu_data.jilu[jilu_data.index].random,random_nfc,4);//存手机号码
+										jilu_data.jilu[jilu_data.index].save_index=jilu_data.index;//记录存在第几组
+										jilu_data.jilu[jilu_data.index].time_is_ok_flag=1;//允许开锁
+										open_door_flag_temp = jilu_data.jilu[jilu_data.index].time_is_ok_flag;
+										printf("card_id not same:random not same:index=%d,open=%d,time=%d\r\n",jilu_data.index,open_door_flag_temp,jilu_data.jilu[jilu_data.index].time);
+									}
+									if(1==open_door_flag_temp)//开锁信息对**********************************************************
+									{
+										//抛出开锁消息
+										opening_door_flag =1;
+										os_event_t evt;
+										evt.event_id = motor_run_event;
+										evt.param_len = 0;
+										evt.param = NULL;
+										evt.src_task_id = TASK_NONE;
+										os_msg_post(ble_motor_task_id,&evt);
+										motor_run_error_timer_init();//电机运行出错定时器初始化
+											
+										memset(s50_id,0,4);
+										memset(set_ht_secret,0,4);						
+										
+										write_nfc_flash();
+										write_phone_flash();
+										//return (KE_MSG_CONSUMED);
+									}
+									else	//时间到了****************************************************************************
+									{
+										printf("time is over!\r\n");	
+										//second_reset();
+										bat_dianliang = 0x02;
+										bat_dianliang_jishu=0;
+										bat_dianliang_jishu_changshu=0x08;//超时闪烁4次
+										nfc_successful_indicator_timer_init();//指示器定时器初始化
+										music_error_timer_init();
+									}
+								}
+								else	//身份密钥错误**************************************************************************
+								{
+									//s_buff[3]=0x81;s_buff[4]=0x02;s_buff[5]=0x85;//55 AA 03 81 02 85
+									//uart_write(s_buff, 6, NULL, NULL);
+									printf("shenfen and key wrong!\r\n");
+									printf("nfc_sf and key:");show_reg2(section1_block1,9,1);//以十六进制打印
+									printf("ble_key:");show_reg2(&sys_config.identity1[4],8,1);//以十六进制打印
+									bat_dianliang = 0x02;
+									bat_dianliang_jishu=0;
+									bat_dianliang_jishu_changshu=0x06;//身份和密钥不对闪烁3次
+									nfc_successful_indicator_timer_init();//指示器定时器初始化
+									music_error_timer_init();			
+								}
+								
+							}			
+							else	//场馆号柜号错误***************************************************************************
+							{ 
+								printf("the changguan or guihao wrong:nfc %d,%d != ble %d,%d\r\n",changguan_nfc,guihao_nfc,changguan_ble,guihao_ble);
+								bat_dianliang = 0x02;
+								bat_dianliang_jishu=0;
+								bat_dianliang_jishu_changshu=0x04;//场馆号和柜号不对闪烁2次
+								nfc_successful_indicator_timer_init();//指示器定时器初始化
+								music_error_timer_init();							
+							}			
+					}
+		  }
+			//
+			else	//没有读到卡信息**********************************************************************************
+			{
+				//printf("S50_Type wrong!\r\n\r\n");	
+				second_reset();	//不播报，平常都会进这里
+			}
+			
+	  }					
+		 break;
+		
+//未识别到事件ID**********************************************************************************************
+	default:
+		break;
+	}
+	
+//nfc刷卡运行总调度返回值*******************************************************************************************
+	return (KE_MSG_CONSUMED);
+}
+
+//nfc刷卡成功指示器定时器初始化###############################################################################
+void nfc_successful_indicator_timer_init(void)
+{
+	NFC_LIGHT_ON;
+	os_timer_disarm(&nfc_indicator_timer);//用于停止某个定时器
+	os_timer_setfn(&nfc_indicator_timer,nfc_successful_indicator_timer_handler,NULL);//定时器的处理回调函数
+	if(0x01==bat_dianliang)
+		os_timer_arm(&nfc_indicator_timer,5000,0);//开启一次1000ms定时活动
+	if(0x02==bat_dianliang)
+		os_timer_arm(&nfc_indicator_timer,500,0);//开启一次500ms定时活动
+}
+
+//nfc刷卡成功指示器定时器回调+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+void nfc_successful_indicator_timer_handler(void *arg)
+{
+	
+	if(0x01==bat_dianliang)
+	{
+			nfc_successful_indicator_timer_stop();
+			NFC_LIGHT_OFF;
+	}
+	if(0x02==bat_dianliang)
+	{		
+			bat_dianliang_jishu=bat_dianliang_jishu+1;
+			if( (bat_dianliang_jishu % 2) == 1 )
+			{
+					NFC_LIGHT_OFF;
+			}
+			else
+			{
+					NFC_LIGHT_ON;
+			}
+			if(bat_dianliang_jishu<bat_dianliang_jishu_changshu)
+			{
+					os_timer_arm(&nfc_indicator_timer,500,0);//开启一次500ms定时活动
+			}
+			
+			if(bat_dianliang_jishu>=bat_dianliang_jishu_changshu)
+			{
+					bat_dianliang=0x01;bat_dianliang_jishu=0;NFC_LIGHT_OFF;nfc_successful_indicator_timer_stop();
+			}		
+	}
+}
+
+//nfc刷卡成功指示器定时器结束++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+void nfc_successful_indicator_timer_stop(void)
+{
+	os_timer_disarm(&nfc_indicator_timer);//用于停止某个定时器
+}
+
+//电机运行出错定时器初始化++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+void motor_run_error_timer_init(void)
+{
+	os_timer_disarm(&motor_run_error_timer);//用于停止某个定时器
+	os_timer_setfn(&motor_run_error_timer,motor_run_error_timer_handler,NULL);//定时器的处理回调函数
+	os_timer_arm(&motor_run_error_timer,12000,0);//开启一次12000ms定时活动(12秒时间到，不管开锁过程是否结束，将强制结束复位)
+}
+
+//电机运行出错定时器回调**************************************************************************************
+void motor_run_error_timer_handler(void *arg)
+{
+	MotorStop();
+	motor_run_error_timer_stop();
+	motor_run_state = 0;
+	opening_door_flag =0;//允许下一次开锁指令
+	hetai_wake_flag = 0;//0表示合泰芯片没有唤醒蓝牙
+	one_minute_timer_init();
+	//if(0==hetai_wake_flag)
+	{
+	 appm_sleep_start();
+     set_sleep_flag_after_key_release(true);
+	}
+}
+
+//电机运行出错定时器结束****************************************************************************************
+void  motor_run_error_timer_stop(void)
+{
+	os_timer_disarm(&motor_run_error_timer);//用于停止某个定时器
+}
+//电机运行****************************************************************************************************
+void MotorForward(void)			    // 正转
+	{
+		inA_LOW;
+		inB_HIGH;
+	}
+
+void MotorInversion(void)			// 反转
+	{
+		inA_HIGH;
+		inB_LOW;
+	}
+void MotorStop(void)				// 停止
+	{
+	    inA_LOW;
+		inB_LOW;
+	}
+void MotorBrake(void)				// 刹车
+	{
+	    inA_HIGH;
+		inB_HIGH;
+	}
+//电机运行定时器启动******************************************************************************************
+void motorrun_init_timer_start(void)
+{
+	//Ptimer，定时器变量，Pfunction，定时器的执行函数，Parg，定时器执行函数的输入参数指针
+	if( (motor_run_state >=0)  && (motor_run_state <=6))
+	{
+		switch(motor_run_state)
+		{
+			case 0://
+			{	
+				//进来首先延时100ms
+				//os_timer_setfn(&motor_run_timer,motorrun_timer_handler,NULL);//定时器的处理回调函数
+			  //  os_timer_disarm(&motor_run_timer);//用于停止某个定时器
+			    os_timer_arm(&motor_run_timer,100,0);//开启一次100ms定时活动
+			    motor_run_state = motor_run_state+1;
+			}
+			break;
+			case 1:
+			{
+				//第一步延时800ms
+				//os_timer_setfn(&motor_run_timer,motorrun_timer_handler,NULL);//定时器的处理回调函数
+			  //  os_timer_disarm(&motor_run_timer);//用于停止某个定时器
+			    os_timer_arm(&motor_run_timer,1100,0);//开启一次1100ms定时活动
+			    motor_run_state = motor_run_state+1;
+			}
+			break;
+			case 2:
+			{
+				//第二步延时100ms
+				//os_timer_setfn(&motor_run_timer,motorrun_timer_handler,NULL);//定时器的处理回调函数
+			  //  os_timer_disarm(&motor_run_timer);//用于停止某个定时器
+			    os_timer_arm(&motor_run_timer,100,0);//开启一次100ms定时活动
+			    motor_run_state = motor_run_state+1;
+			}
+			break;
+			case 3:
+			{
+				//第三步延时100ms
+				//os_timer_setfn(&motor_run_timer,motorrun_timer_handler,NULL);//定时器的处理回调函数
+			  //  os_timer_disarm(&motor_run_timer);//用于停止某个定时器
+			    os_timer_arm(&motor_run_timer,3000,0);//开启一次3000ms定时活动
+			    motor_run_state = motor_run_state+1;
+			}
+			break;
+			case 4:
+			{
+				//第四步延时800ms
+				//os_timer_setfn(&motor_run_timer,motorrun_timer_handler,NULL);//定时器的处理回调函数
+			  //  os_timer_disarm(&motor_run_timer);//用于停止某个定时器
+			    os_timer_arm(&motor_run_timer,1100,0);//开启一次1100ms定时活动
+			    motor_run_state = motor_run_state+1;
+			}
+			break;
+			case 5:
+			{
+				//第五步延时100ms
+				//os_timer_setfn(&motor_run_timer,motorrun_timer_handler,NULL);//定时器的处理回调函数
+			  //  os_timer_disarm(&motor_run_timer);//用于停止某个定时器
+			    os_timer_arm(&motor_run_timer,100,0);//开启一次100ms定时活动
+			    motor_run_state = motor_run_state+1;
+			}
+			break;
+			case 6:
+			{
+				//第六步延时100ms
+				//os_timer_setfn(&motor_run_timer,motorrun_timer_handler,NULL);//定时器的处理回调函数
+			  //  os_timer_disarm(&motor_run_timer);//用于停止某个定时器
+			    os_timer_arm(&motor_run_timer,100,0);//开启一次100ms定时活动
+			    motor_run_state = motor_run_state+1;
+			}
+			break;
+
+			default:
+				break;
+		}
+
+	}
+}
+
+//电机运行定时器结束*********************************************************************************************
+void motorrun_init_timer_stop(void)
+{
+	os_timer_disarm(&motor_run_timer);//用于停止某个定时器
+	//printf("AES is pass!");
+	//printf("\r\n");
+}
+
+//电机运行定时器处理回调***************************************************************************************
+void motorrun_timer_handler(void *arg)
+{
+	os_event_t evt;
+	if( (motor_run_state >=0)  && (motor_run_state <=7))
+	{
+		switch(motor_run_state)
+		{
+			case 1:
+			{
+				evt.event_id = motor_run_event_1;
+				evt.param_len = 0;
+			    evt.param = NULL;
+				evt.src_task_id = TASK_NONE;
+				os_msg_post(ble_motor_task_id,&evt);
+			}
+			break;
+			case 2:
+			{
+				evt.event_id = motor_run_event_2;
+				evt.param_len = 0;
+			    evt.param = NULL;
+				evt.src_task_id = TASK_NONE;
+				os_msg_post(ble_motor_task_id,&evt);
+			}
+			break;
+			case 3:
+			{
+				evt.event_id = motor_run_event_3;
+				evt.param_len = 0;
+			    evt.param = NULL;
+				evt.src_task_id = TASK_NONE;
+				os_msg_post(ble_motor_task_id,&evt);
+			}
+			break;
+			case 4:
+			{
+				evt.event_id = motor_run_event_4;
+				evt.param_len = 0;
+			    evt.param = NULL;
+				evt.src_task_id = TASK_NONE;
+				os_msg_post(ble_motor_task_id,&evt);
+			}
+			break;
+			case 5:
+			{
+				evt.event_id = motor_run_event_5;
+				evt.param_len = 0;
+			    evt.param = NULL;
+				evt.src_task_id = TASK_NONE;
+				os_msg_post(ble_motor_task_id,&evt);
+			}
+			break;
+			case 6:
+			{
+				evt.event_id = motor_run_event_6;
+				evt.param_len = 0;
+			    evt.param = NULL;
+				evt.src_task_id = TASK_NONE;
+				os_msg_post(ble_motor_task_id,&evt);
+			}
+			break;
+			case 7:
+			{
+				evt.event_id = motor_run_event_7;
+				evt.param_len = 0;
+			    evt.param = NULL;
+				evt.src_task_id = TASK_NONE;
+				os_msg_post(ble_motor_task_id,&evt);
+			}
+			break;
+			
+
+			default:
+				break;
+		}
+
+	}
+	
+}
+
+//任务函数和ID绑定初始化**************************************************************************************
+void  MotorRun_task_init(void)		
+	{
+		 if ( os_task_create( MotorRun_task_Process,&ble_motor_task_id ) != KE_TASK_OK )
+	     {
+	        printf("MotorRun_task create fail\r\n");
+	        //goto _exit;
+	     }
+	}
+
+ //电机任务处理函数******************************电机开锁过程处理************************************************
+int MotorRun_task_Process(os_event_t *msg)        
+{
+	uint8_t s_buff[12]={0x55,0xAA,0x03,0x87,0x00,0xff,0xff,0xff,0xff,0xff,0xff,0xff};
+	uint8_t door_state = 0;
+
+	switch(msg->event_id)
+    {
+		case motor_run_event:
+        {
+			while(gpio_portc_read()==32)
+		MotorInversion();
+	    MotorStop();		
+			motorrun_init_timer_stop();
+			MotorStop();
+			motor_run_state=0;
+			motorrun_init_timer_start();//自动复位后停车100ms
+        }
+        break;
+		case motor_run_event_1://缩进1100ms
+        {
+			motorrun_init_timer_stop();
+			MotorForward();
+			motorrun_init_timer_start();
+			which_song(OPEN_SUC_MUSIC);//开锁成功播报
+        }
+        break;
+		case motor_run_event_2://刹车100ms
+        {
+			motorrun_init_timer_stop();
+			MotorBrake();
+			motorrun_init_timer_start();
+			
+			read_card_id();//读出保存的卡号
+			door_state = gpio_portc_read();	//获取门的状态
+			//printf("the door_state is:%02x\r\n",door_state);			
+			if(door_state == 0x00) //门是打开的
+			{
+				memcpy(&s_buff[4],sys_config.mac_store,6);
+				s_buff[2]=9;//长度
+				s_buff[10]=2;//失败
+				//SPEAKER_PLAY_HIGH;
+			}
+			else
+			{
+				memcpy(&s_buff[4],sys_config.mac_store ,6);
+				s_buff[2]=9;//长度
+				s_buff[10]=1;//成功	
+				//SPEAKER_PLAY_HIGH;
+			}
+								 
+			s_buff[s_buff[2]+2]=CLU_check(&s_buff[2],s_buff[2]);//计算校验和
+			at_spss_send_data(gAT_ctrl_env.transparent_conidx,s_buff,s_buff[2]+3);//ble从机发送数据给主机
+			printf("ble->phone:");
+			show_reg2(s_buff,s_buff[2]+3,1);//以十六进制打印
+        }
+        break;
+		case motor_run_event_3://停车5000ms
+        {
+			motorrun_init_timer_stop();
+			MotorStop();
+			motorrun_init_timer_start();	
+
+			appm_disconnect(app_env.conidx);//断开蓝牙
+			
+        }
+        break;
+		case motor_run_event_4://伸出1100ms
+        {
+			motorrun_init_timer_stop();
+			MotorInversion();
+			motorrun_init_timer_start();
+        }
+        break;
+		case motor_run_event_5://刹车100ms
+        {
+			motorrun_init_timer_stop();
+			MotorBrake();
+			motorrun_init_timer_start();
+        }
+        break;
+		case motor_run_event_6://停车100ms
+        {
+			motorrun_init_timer_stop();
+			MotorStop();
+			motorrun_init_timer_start();
+			//SPEAKER_PLAY_LOW;
+        }
+        break;
+		case motor_run_event_7:
+        {
+			motorrun_init_timer_stop();
+			/*read_card_id();//读出保存的卡号
+			door_state = gpio_portc_read();	//获取门的状态
+			//printf("the door_state is:%08x\r\n",door_state);			
+			if(door_state == 0x00) //门是打开的
+			{
+				memcpy(&s_buff[4],sys_config.mac_store,6);
+				s_buff[2]=9;//长度
+				s_buff[10]=1;//成功
+				//SPEAKER_PLAY_HIGH;
+			}
+			else
+			{
+				memcpy(&s_buff[4],sys_config.mac_store ,6);
+				s_buff[2]=9;//长度
+				s_buff[10]=2;//失败	
+				//SPEAKER_PLAY_HIGH;
+			}
+								 
+			s_buff[s_buff[2]+2]=CLU_check(&s_buff[2],s_buff[2]);//计算校验和
+			at_spss_send_data(gAT_ctrl_env.transparent_conidx,s_buff,s_buff[2]+3);//ble从机发送数据给主机
+			motor_run_state = 0;
+			opening_door_flag =0;//允许下一次开锁指令
+			printf("the ble->phone data:");
+			show_reg2(s_buff,s_buff[2]+3,1);//以十六进制打印
+			//appm_disconnect(app_env.conidx);//断开蓝牙*/
+			motor_run_state = 0;
+			opening_door_flag =0;//允许下一次开锁指令
+			one_minute_timer_init();
+			appm_sleep_start();
+	        set_sleep_flag_after_key_release(true);	
+			
+		}
+        break;
+	    case ble_open_fair_err:
+		{
+			music_error_timer_init();
+		}
+		break;
+		
+		default:
+        break;
+	}
+	return (KE_MSG_CONSUMED);
+
+}
+
+
+//计时定时器初始化*********************************************************************************************
+void jishi_timer_init(void)
+{
+	os_timer_disarm(&jishi_timer);//用于停止某个定时器
+	os_timer_setfn(&jishi_timer,jishi_timer_handler,NULL);//定时器的处理回调函数
+	os_timer_arm(&jishi_timer,60000,1);//开启一次60000ms定时活动(1分钟重复执行)
+}
+
+//计时定时器回调***********************************************************************************************
+void jishi_timer_handler(void *arg)
+{
+	//抛出消息，任务执行时间递减;
+	os_event_t evt;
+	evt.event_id = one_minute_event;
+	evt.param_len = 0;
+	evt.param = NULL;
+	evt.src_task_id = TASK_NONE;
+	os_msg_post(jishi_task_id,&evt);
+}
+
+//计时定时器结束**********************************************************************************************
+void jishi_timer_stop(void)
+{
+	os_timer_disarm(&jishi_timer);//用于停止某个定时器
+}
+
+//任务函数和ID绑定初始化**************************************************************************************
+void jishi_task_init(void)		
+{
+	if ( os_task_create( jishi_task_Process,&jishi_task_id ) != KE_TASK_OK )
+    {
+       printf("jishi_task create fail\r\n");
+       //goto _exit;
+    }
+}
+
+//计时任务处理函数********************************************************************************************
+int jishi_task_Process(os_event_t *msg)        
+{
+	uint8_t i=0;
+	//jishi_flag=0;
+	//appm_sleep_stop();
+	//set_sleep_flag_after_key_release(false);
+//	appm_sleep_stop();
+	//printf("one minute!\r\n");
+//	
+//	opening_door_flag =1;
+//	os_event_t evt;
+//	evt.event_id = motor_run_event;
+//	evt.param_len = 0;
+//	evt.param = NULL;
+//	evt.src_task_id = TASK_NONE;
+//	os_msg_post(ble_motor_task_id,&evt);
+//	motor_run_error_timer_init();//电机运行出错定时器初始化
+	//printf("test_second_heart is:%d\r\n",test_second_heart);
+	if(1==test_second_heart)//防止1秒定时器不工作
+	  {test_second_heart = 0;}
+	else
+	  {second_reset();}
+	switch(msg->event_id)
+    {
+		case one_minute_event:
+        {
+			//printf("10s time is over!\r\n");
+			for(i=0;i<jilu_count;i++)//刷卡记录递减
+			{
+				if(jilu_data.jilu[i].time>0)//不为0
+				{
+					jilu_data.jilu[i].time=jilu_data.jilu[i].time-1;
+					if(0==jilu_data.jilu[i].time)
+					{
+						jilu_data.jilu[i].time=0;
+						jilu_data.jilu[i].time_is_ok_flag=0;						
+						memset(jilu_data.jilu[i].phone,0,4);
+						write_nfc_flash();
+					}
+				}
+				else//已经减到0
+				{
+					;
+				}
+			}
+			for(i=0;i<1;i++)//电话限时递减
+			{
+				if(all_phone.shijian[i]>0)//不为0
+				{
+					all_phone.shijian[i]=all_phone.shijian[i]-1;
+					if(0==all_phone.shijian[i])
+					{
+						all_phone.shijian[i]=0;					
+						memset(all_phone.haoma[i],0,4);
+						write_phone_flash();//号码时限到了保存起来
+					}
+				}
+				else//已经减到0
+				{
+					;
+				}
+			}
+        }
+        break;	
+		
+		default:
+        break;
+	}
+	//jishi_flag=0;
+	return (KE_MSG_CONSUMED);
+}
+
+//1秒钟休眠定时器初始化****************************************************************************************
+void one_minute_timer_init(void)
+{
+	//if(0==hetai_wake_flag)//若按键唤醒了，1s休眠先不启用
+	{
+//		os_timer_disarm(&one_minute_timer);//用于停止某个定时器
+//		os_timer_setfn(&one_minute_timer,one_minute_timer_handler,NULL);//定时器的处理回调函数
+		os_timer_arm(&one_minute_timer,2000,0);//开启一次1000ms定时活动(1分钟重复执行)
+	}
+}
+
+//1秒钟休眠定时器回调*****************************************************************************************
+void one_minute_timer_handler(void *arg)
+{
+	//if(0==hetai_wake_flag)//若按键唤醒了，1s休眠先不启用
+	{
+	  appm_sleep_stop();
+	  set_sleep_flag_after_key_release(false);
+	}
+	fputc('T',NULL);
+//	printf("sleep start!\r\n");
+//	appm_sleep_start();
+//  set_sleep_flag_after_key_release(true);
+	test_second_heart = 1;//1代表1秒定时器还活着
+	#if 1
+	  if(opening_door_flag ==0)//此时电机没有在动作
+	  	{	  	
+	    os_event_t evt;
+	  	evt.event_id = read_nfc_cardid_event;
+		evt.param_len = 0;
+		evt.param = NULL;
+		evt.src_task_id = TASK_NONE;
+		os_msg_post(nfc_task_id,&evt);
+	  	}
+  #endif
+}
+
+//1秒钟休眠定时器结束*****************************************************************************************
+void one_minute_timer_stop(void)
+{
+	os_timer_disarm(&one_minute_timer);//用于停止某个定时器
+}
+
+//合泰20秒定时器回调******************************************************************************************
+void hetai_10s_timer_handler(void *arg)
+{
+		appm_stop_advertising();//停止广播
+		hetai_wake_flag = 0;
+		//one_minute_timer_init();//开启1秒钟循环唤醒定时器
+		//appm_sleep_start();
+        //set_sleep_flag_after_key_release(true);
+}
+
+//合泰20秒唤醒************************************************************************************************
+void hetai_10s_timer_init(void)
+{
+		os_timer_disarm(&hetai_10s_timer);//用于停止某个定时器
+		os_timer_setfn(&hetai_10s_timer,hetai_10s_timer_handler,NULL);//定时器的处理回调函数
+		os_timer_arm(&hetai_10s_timer,20000,0);//开启一次20s定时活动
+}
+
+//单线通信*****************************************************************************************************
+void lcdd_out(void)
+{
+	uu:
+	tick_no+=1;
+	if(tick_no>=20)
+	{		
+		tick_no=0;
+		if(show_bit>=32)
+		{
+			show_bit=0;
+			MUSIC_LOW;
+		}
+		else
+		{
+			show_bit+=1;
+		}
+		if((show_bit<8))
+		{
+			zhen=show_bit/8;
+			fen=show_bit%8;													
+			if(fen==0)
+			{
+				val=display_data[zhen];
+				tool=val&0x01;
+			}
+			else
+			{
+				tool=(val>>fen)&0x01;
+			}
+			MUSIC_LOW;
+		}
+		else
+	 { 
+			if(show_bit<=25)
+			{
+				MUSIC_LOW; 
+			}
+			if((show_bit>25)&&(show_bit<=28))
+			{
+				MUSIC_LOW;
+			}
+			if((show_bit>28)&&(show_bit<=32))
+			{
+				MUSIC_HIGH;
+			}
+			if(show_bit==32)
+			{	
+				MUSIC_HIGH;
+				danxian_count=danxian_count-1;
+				if(0==cishu_flag)//为了第一次设置音量
+				{
+					if(0==danxian_count)
+					{
+						danxian_count=4;display_data[0] =display_data[1];
+						show_bit=32;tick_no=20;
+						goto uu;
+						//danxian_count=2;
+						//timer_stop (TIM0);
+					}
+					if(3==danxian_count)
+					{
+						danxian_count=2;show_bit=25;tick_no=20;cishu_flag=0;
+						timer_stop (TIM0);
+					}
+				}
+				else
+				{
+					if(0==danxian_count)
+					{
+						danxian_count=2;
+						show_bit=25;tick_no=20;
+						timer_stop (TIM0);
+					}
+				}
+//				if(0==danxian_count)
+//				{
+//					danxian_count=4;display_data[0] =display_data[1];
+//					show_bit=32;tick_no=20;
+//					goto uu;
+//					//danxian_count=2;
+//					//timer_stop (TIM0);
+//				}
+//				if(3==danxian_count)
+//				{
+//					danxian_count=2;show_bit=25;tick_no=20;
+//					timer_stop (TIM0);
+//				}
+			}
+		}	               
+  }
+  if((tick_no==5)&&(show_bit<8))
+		{ if(tool)  {MUSIC_HIGH;}}	
+  //if((tick_no==10)&&(show_bit<8))
+		//{ if(tool)  {MUSIC_HIGH;}}	
+  if(tick_no==15)
+	{
+		if(show_bit<8)
+		{ if(tool==0)
+		  {
+				MUSIC_HIGH;
+		  }
+		}
+	  if(show_bit==32)//目的是开启新一轮发送
+		{
+			MUSIC_LOW;
+			tick_no=20;
+			goto uu;
+		}
+	 }
+}
+
+//开启定时器，播放选定歌曲************************************************************************************
+void which_song(uint8_t song)
+{
+		if(0==cishu_flag)	
+		{display_data[0]=0xf7;display_data[1]=song;danxian_count=2;show_bit=25;tick_no=20;}
+		else
+		{display_data[0]=song;display_data[1]=song;danxian_count=2;show_bit=25;tick_no=20;}
+		//display_data[0]=0xf5;display_data[1]=song;danxian_count=2;show_bit=25;tick_no=20;
+	  timer0_init();
+}
+
+//第二次复位无按键蓝牙进入休眠*******************************************************************************
+void second_reset(void)
+{
+	one_minute_timer_init();
+	if(0==hetai_wake_flag)
+	{
+			appm_sleep_start();
+			set_sleep_flag_after_key_release(true);
+	}
+}
+
+//刷卡出错提示音定时器回调************************************************************************************
+void music_error_timer_handler(void *arg)
+{			
+	second_reset();
+}
+
+//刷卡出错提示音定时器初始化**********************************************************************************
+void music_error_timer_init(void)
+{
+		which_song(OPEN_FAIL);
+		os_timer_disarm(&music_error_timer);//用于停止某个定时器	
+		os_timer_setfn(&music_error_timer,music_error_timer_handler,NULL);//定时器的处理回调函数
+		os_timer_arm(&music_error_timer,400,0);//开启一次0.4s定时活动
+}
+
+//蓝牙播报出错提示音定时器回调
+/*void lanya_error_timer_handler(void *arg)
+{			
+	os_event_t evt;
+	evt.event_id = ble_open_fair_err;
+	evt.param_len = 0;
+	evt.param = NULL;
+	evt.src_task_id = TASK_NONE;
+	os_msg_post(ble_motor_task_id,&evt);
+}*/
+
+//蓝牙播报出错提示音定时器初始化
+/*void lanya_error_timer_init(void)
+{
+		which_song(OPEN_FAIL);	
+		os_timer_setfn(&lanya_error_timer,lanya_error_timer_handler,NULL);//定时器的处理回调函数
+		os_timer_disarm(&lanya_error_timer);//用于停止某个定时器
+		os_timer_arm(&lanya_error_timer,900,0);//开启一次1s定时活动
+}*/
+
+//可能是写 NFC 数据进 FLASH*******************************************************************************************
+void write_nfc_flash(void)
+{
+	uint16_t read_size;	
+	uint8_t *read_size_buf; 
+	read_size = 801;
+	read_size_buf = os_malloc(read_size,KE_MEM_NON_RETENTION);//申请空间
+	memcpy( read_size_buf, jilu_data.jilu,801);
+	flash_erase(0x31000, 0);
+	flash_write_with_check(0x31000, read_size, read_size_buf);//存储起来
+	os_free(read_size_buf);//释放空间
+}
+
+//可能是写 手机 数据进 FLASH*************************************************************************************
+void write_phone_flash(void)
+{
+	uint8_t read_size;	
+	uint8_t *read_size_buf; 
+
+	read_size = 7;
+	read_size_buf = os_malloc(read_size,KE_MEM_NON_RETENTION);//申请空间
+	memcpy( read_size_buf, all_phone.haoma,7);
+	flash_erase(0x32000, 0);
+	flash_write_with_check(0x32000, read_size, read_size_buf);//存储起来
+	os_free(read_size_buf);//释放空间
+}
+
+//读手机数据**************************************************************************************************
+void read_phone(void)
+{
+	uint8_t read_size;
+	uint8_t *read_size_buf; 
+	uint8_t cnt = 0;
+
+	read_size = 7;
+	read_size_buf = os_malloc(read_size,KE_MEM_NON_RETENTION);//申请空间
+	
+	flash_read(0x32000, read_size, read_size_buf);
+	memcpy(all_phone.haoma, read_size_buf,7);
+	/*all_phone.index=read_size_buf[30];//保存到第几条了
+	for(cnt=0;cnt<5;cnt++)
+	{
+		memcpy(all_phone.haoma[cnt], read_size_buf+cnt*4, 4);
+		memcpy(&all_phone.shijian[cnt], read_size_buf+cnt*2+20, 2);
+	}*/
+	printf("the phone index is:%d\r\n",all_phone.index);
+	for(cnt=0;cnt<1;cnt++)
+	{
+		printf("team %d is:%02x,%02x,%02x,%02x,%d\r\n",cnt,all_phone.haoma[cnt][0],all_phone.haoma[cnt][1],all_phone.haoma[cnt][2],all_phone.haoma[cnt][3],all_phone.shijian[cnt]);
+	}
+	os_free(read_size_buf);//释放空间
+}
+
